@@ -40,6 +40,14 @@ setup(
         'Programming Language :: Python :: 3.12',
     ],
     python_requires='>=3.8',
-    install_requires=requirements,
+    install_requires=[
+        'numpy>=1.20.0',
+        'pandas>=1.3.0',
+        'matplotlib>=3.4.0',
+        'gsw>=3.4.0',
+        'xarray>=0.19.0',
+        'pyarrow>=5.0.0',
+        'openpyxl>=3.0.0',
+    ],
     include_package_data=True,
 )

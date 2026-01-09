@@ -4,7 +4,9 @@ pandas>=1.3.0
 matplotlib>=3.4.0
 
 # CTD processing
-python-ctd>=1.0.0
+# python-ctd needs to be installed from conda or GitHub
+# conda install -c conda-forge ctd
+# OR: pip install git+https://github.com/pyoceans/python-ctd.git
 gsw>=3.4.0
 
 # Data formats
