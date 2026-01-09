@@ -1,0 +1,18 @@
+# Core dependencies
+numpy>=1.20.0
+pandas>=1.3.0
+matplotlib>=3.4.0
+
+# CTD processing
+python-ctd>=1.0.0
+gsw>=3.4.0
+
+# Data formats
+xarray>=0.19.0
+pyarrow>=5.0.0
+openpyxl>=3.0.0
+
+# Optional dependencies for development
+jupyter>=1.0.0
+ipykernel>=6.0.0
+
