@@ -92,7 +92,8 @@ def rbr_cast(excel_file, stations_df, recasts: list[int] = None):
         # Not really 'priming the pump' for rbr but need to remove some data before consistent data
         df = remove_pump_priming(df, method='stability', 
                                    gradient_threshold=1.0, n_stable=3)
-        df._metadata = {'atmospheric_pressure': atm_pressure, 'instrument_type': 'rbr', 'time' : df.Time.iloc[0]}
+        df._metadata = {'atmospheric_pressure': atm_pressure, 'instrument_type': 'rbr',
+                        'time': df.Time.iloc[0], 'station': str(down_prof_df.loc[i, 'lab'])}
         dfs.append(df)
 
     return dfs
@@ -133,4 +134,8 @@ def load_bottle_file(bl_file, doc_file=None):
         bl_df['doc_conc'] = np.nan
     
     return bl_df
+
+
+# Backward-compatible alias (formerly update_DOC_file in ctd_step1.py)
+update_DOC_file = load_bottle_file
 

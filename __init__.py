@@ -29,7 +29,7 @@ from .io import sbe_cast, rbr_cast, get_cast, load_bottle_file
 from .processing import process_ctd, remove_pump_priming
 from .plotting import plot_ts, from_file_to_plot, plot_bl_files
 from .storage import make_parquet
-from .batch import process_bl_doc_files
+from .batch import process_bl_doc_files, batch_process_all
 from .dataset import create_ctd_dataset
 from .utils import detect_precision, parse_folder_date
 from .config import set_project_root, PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE
@@ -55,6 +55,7 @@ __all__ = [
     
     # Batch processing
     'process_bl_doc_files',
+    'batch_process_all',
     
     # Dataset creation
     'create_ctd_dataset',
