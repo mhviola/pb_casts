@@ -6,10 +6,10 @@ import pandas as pd
 from .utils import detect_precision
 
 
-def remove_pump_priming(cast_df, method='stability', depth_threshold=0.5, 
-                        gradient_threshold=1.0, n_stable=3, min_depth=0.25):
+def remove_surface_noise(cast_df, method='stability', depth_threshold=0.5, 
+                        gradient_threshold=0.02, n_stable=5, min_depth=0.25):
     """
-    Remove pre-pump data before CTD conductivity cell is flushed.
+    Remove surface noise from CTD data.
     
     Methods: 'depth' (simple cutoff), 'stability' (n_stable consecutive points 
     with gradient < threshold), 'combined' (both). Always enforces min_depth.
@@ -26,10 +26,10 @@ def remove_pump_priming(cast_df, method='stability', depth_threshold=0.5,
     
     elif method == 'stability':
         # Find where salinity stabilizes over n_stable consecutive points
-        sal_gradient = working_df['sal00'].diff().abs()
+        den_gradient = working_df['density'].diff().abs()
         
         # Create rolling check: all of the last n_stable gradients must be below threshold
-        is_stable = sal_gradient < gradient_threshold
+        is_stable = den_gradient < gradient_threshold
         # Rolling sum of stable points - when it equals n_stable, we have n_stable consecutive stable readings
         stable_run = is_stable.rolling(window=n_stable, min_periods=n_stable).sum()
 
@@ -40,8 +40,15 @@ def remove_pump_priming(cast_df, method='stability', depth_threshold=0.5,
             # Start from (n_stable - 1) points before the first fully stable window
             # This is the beginning of the stable region
             first_stable_window_end = stable_indices[0]
-            first_stable_window_start_pos = working_df.index.get_loc(first_stable_window_end) - (n_stable - 1)
-            first_stable_window_start_pos = max(0, first_stable_window_start_pos)
+            loc = working_df.index.get_loc(first_stable_window_end)
+            # get_loc returns int, slice, or bool array when index has duplicates
+            if isinstance(loc, slice):
+                end_pos = loc.start
+            elif isinstance(loc, np.ndarray):
+                end_pos = int(loc.nonzero()[0][0])
+            else:
+                end_pos = int(loc)
+            first_stable_window_start_pos = max(0, end_pos - (n_stable - 1))
             first_stable_idx = working_df.index[first_stable_window_start_pos]
             return working_df[working_df.index >= first_stable_idx]
         else:
@@ -64,8 +71,14 @@ def remove_pump_priming(cast_df, method='stability', depth_threshold=0.5,
         
         if len(stable_indices) > 0:
             first_stable_window_end = stable_indices[0]
-            first_stable_window_start_pos = depth_filtered.index.get_loc(first_stable_window_end) - (n_stable - 1)
-            first_stable_window_start_pos = max(0, first_stable_window_start_pos)
+            loc = depth_filtered.index.get_loc(first_stable_window_end)
+            if isinstance(loc, slice):
+                end_pos = loc.start
+            elif isinstance(loc, np.ndarray):
+                end_pos = int(loc.nonzero()[0][0])
+            else:
+                end_pos = int(loc)
+            first_stable_window_start_pos = max(0, end_pos - (n_stable - 1))
             first_stable_idx = depth_filtered.index[first_stable_window_start_pos]
             return depth_filtered[depth_filtered.index >= first_stable_idx]
         else:
@@ -124,14 +137,29 @@ def process_ctd(df, smooth=True, columns=None):
         sample_rate = 4.0
         despike_block = 75
         smooth_window = 11
+
     else:
-        raise ValueError(f"Invalid instrument type: {df._metadata['instrument_type']}")    
+        raise ValueError(f"Invalid instrument type: {df._metadata['instrument_type']}")
+
     # Common parameters optimized for Padilla Bay halocline studies
     bin_delta = 0.25
-    
+    df_clean = remove_surface_noise(df, method='stability', gradient_threshold=0.02, n_stable=5, min_depth=0.25)
+    if len(df_clean) == 0:
+        raise ValueError(
+            f"Cast at {df._metadata['station']} on {df._metadata['time']} is empty after "
+            "surface-noise removal — check the raw data or relax remove_surface_noise parameters."
+        )
+    # Cap block size to the actual data length — despike raises an error if
+    # len(df_clean) < block. Short casts still go through the full pipeline; a
+    # smaller block just means tighter local statistics for spike detection.
+    if despike_block > len(df_clean):
+        print(f"Warning: short cast at {df._metadata['station']} on {df._metadata['time']} "
+              f"({len(df_clean)} rows); capping despike block from {despike_block} to {len(df_clean)}.")
+        despike_block = len(df_clean)
     # Process the selected columns (without bindata first to preserve surface data)
+    
     proc_df = (
-        df[cols_to_process]
+        df_clean[cols_to_process]
         .despike(n1=2, n2=20, block=despike_block)
         .lp_filter(sample_rate=sample_rate, time_constant=0.15)
         .press_check()

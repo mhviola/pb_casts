@@ -5,7 +5,7 @@ A Python package for processing SeaBird and RBR CTD data from Padilla Bay field 
 ## Features
 
 - **Multi-instrument support**: Process both SeaBird (CNV) and RBR (Excel) CTD data
-- **Automated quality control**: Remove pump priming artifacts, despike, filter
+- **Automated quality control**: Remove surface artifacts, despike, filter
 - **Bottle data integration**: Merge CTD profiles with discrete bottle samples
 - **DOC analysis**: Integrate DOC measurements with salinity profiles
 - **Batch processing**: Process multiple casts automatically
@@ -142,7 +142,7 @@ import pb_casts
 
 The CTD processing pipeline includes:
 
-1. **Pump priming removal**: Automatically detect and remove unstable surface data
+1. **Surface data removal**: Automatically detect and remove unstable surface data
 2. **Despiking**: Remove sensor spikes using configurable block averaging
 3. **Low-pass filtering**: Apply Butterworth filter with 0.15s time constant
 4. **Pressure checks**: Validate monotonic depth progression
@@ -179,7 +179,7 @@ print(pb_casts.OUTPUT_PATH)
 ### Processing
 
 - `process_ctd(df, smooth=True, columns=None)` - Process CTD data
-- `remove_pump_priming(cast_df, method='stability')` - Remove surface artifacts
+- `remove_surface_noise(cast_df, method='stability')` - Remove surface artifacts
 
 ### Plotting
 

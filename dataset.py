@@ -31,7 +31,8 @@ def create_ctd_dataset(station_coords_file=None, data_path=None):
         station_coords = {row['station']: (row['lat'], row['lon']) 
                          for _, row in station_df.iterrows()}
     
-    cnv_files = list(data_path.glob("**/*NTS.cnv"))
+    cnv_files = list(data_path.glob("**/*.cnv"))
+    rbr_files = list(data_path.glob("**/*.xlsx"))
     data_dict = {}
     
     for cnv_file in cnv_files:
@@ -64,7 +65,10 @@ def create_ctd_dataset(station_coords_file=None, data_path=None):
         except Exception as e:
             print(f"Error processing {cnv_file}: {e}")
             continue
-    
+    # for rbr_file in rbr_files:
+    #     try:
+            
+            
     if not data_dict:
         raise ValueError("No valid CTD data found!")
     

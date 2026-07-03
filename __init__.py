@@ -25,14 +25,14 @@ __version__ = '0.1.0'
 __author__ = 'Marisa Viola'
 
 # Import key functions for convenient access
-from .io import sbe_cast, rbr_cast, get_cast, load_bottle_file
-from .processing import process_ctd, remove_pump_priming
+from .io import sbe_cast, rbr_cast, get_cast, load_bottle_file, station_from_path
+from .processing import process_ctd, remove_surface_noise
 from .plotting import plot_ts, from_file_to_plot, plot_bl_files
 from .storage import make_parquet
 from .batch import process_bl_doc_files, batch_process_all
 from .dataset import create_ctd_dataset
-from .utils import detect_precision, parse_folder_date
-from .config import set_project_root, PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE
+from .utils import detect_precision, parse_folder_date, compute_density
+from .config import set_project_root, PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE, STATIONS_FILE, CAST_MAP
 
 __all__ = [
     # IO functions
@@ -40,10 +40,10 @@ __all__ = [
     'rbr_cast',
     'get_cast',
     'load_bottle_file',
-    
+    'station_from_path',
     # Processing functions
     'process_ctd',
-    'remove_pump_priming',
+    'remove_surface_noise',
     
     # Plotting functions
     'plot_ts',
@@ -63,6 +63,7 @@ __all__ = [
     # Utilities
     'detect_precision',
     'parse_folder_date',
+    'compute_density',
     
     # Configuration
     'set_project_root',

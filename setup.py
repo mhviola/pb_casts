@@ -27,7 +27,8 @@ setup(
     long_description=readme,
     long_description_content_type='text/markdown',
     url='https://github.com/yourusername/pb_casts',
-    packages=find_packages(),
+    packages=['pb_casts'],
+    package_dir={'pb_casts': '.'},
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
