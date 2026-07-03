@@ -23,6 +23,7 @@ def get_cast(file):
     """
     stations_df = pd.read_csv(STATIONS_FILE)
     if file.endswith('.cnv'):
+        
         return sbe_cast(file, stations_df)
     elif file.endswith('.xlsx'):
         
@@ -50,6 +51,7 @@ def sbe_cast(cnv_file, stations_df):
 
     cast_df = ctd.from_cnv(cnv_file)
     station = station_from_path(cnv_file, stations_df)
+
     cast_df._metadata['station'] = station
     lat = stations_df[stations_df.name == station].lat.values[0]
     lon = stations_df[stations_df.name == station].lon.values[0]

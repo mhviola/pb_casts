@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(os.environ.get('PB_PROJECT_ROOT', _default_root))
 DATA_PATH = PROJECT_ROOT / "Data"
 OUTPUT_PATH = PROJECT_ROOT / "Output"
 DOC_FILE = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
-STATIONS_FILE = PROJECT_ROOT / "Data" / "stations.csv"
+STATIONS_FILE = PROJECT_ROOT / "Data" / "station_coordinates.csv"
 
 CAST_MAP = {
     '2025Oct20': {
@@ -38,5 +38,5 @@ def set_project_root(path):
     DATA_PATH = PROJECT_ROOT / "Data"
     OUTPUT_PATH = PROJECT_ROOT / "Output"
     DOC_FILE = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
-    STATIONS_FILE = PROJECT_ROOT / "Data" / "stations.csv"
+    STATIONS_FILE = PROJECT_ROOT / "Data" / "station_coordinates.csv"
 
