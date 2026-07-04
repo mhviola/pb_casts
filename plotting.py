@@ -5,12 +5,29 @@ import numpy as np
 import matplotlib.pyplot as plt
 import gsw
 from pathlib import Path
-from .config import DATA_PATH, OUTPUT_PATH
+from . import config
 from .io import sbe_cast, load_bottle_file
 
 
 def plot_ts(down_df, bl_down_df=None):
-    """Plot T-S diagram with density contours and salinity vs depth profile."""
+    """
+    Plot a T-S diagram (left) and salinity-vs-depth profile (right).
+
+    Density contours (sigma-t) are overlaid on the T-S panel.  If bottle data
+    is supplied, bottle samples are plotted on both panels and annotated with
+    their bottle numbers.
+
+    NOTE: this function expects the raw python-ctd column names —
+    'Salinity', 'Temperature', 'Depth' — as produced by load_bottle_file().
+    It does NOT work on processed CTD output (which uses 'sal00'/'tv290C'/'depSM').
+
+    Args:
+        down_df:    DataFrame with columns Salinity, Temperature, Depth.
+        bl_down_df: Optional bottle DataFrame from load_bottle_file(), same
+                    column convention.
+
+    Returns: matplotlib Figure.
+    """
     # Calculate axis ranges with padding
     smin = down_df.Salinity.min() * 0.99
     smax = down_df.Salinity.max() * 1.01
@@ -68,8 +85,8 @@ def from_file_to_plot(cnv_file, bl_file, doc_file=None):
 
 def plot_bl_files(data_path=None, output_path=None):
     """Process all BL files in Data folder, save T-S plots to Output folder."""
-    data_path = Path(data_path) if data_path else DATA_PATH
-    output_path = Path(output_path) if output_path else OUTPUT_PATH
+    data_path = Path(data_path) if data_path else config.DATA_PATH
+    output_path = Path(output_path) if output_path else config.OUTPUT_PATH
     output_path.mkdir(exist_ok=True)
     
     bl_files = list(data_path.glob("**/*.bl"))

@@ -1,17 +1,39 @@
 """
 Configuration and path management for Padilla Bay project.
+
+Path constants default to the directory one level above this package so they
+work out-of-the-box when the repo is cloned alongside the Data/Output folders.
+Call set_project_root() (or export PB_PROJECT_ROOT) to point elsewhere.
 """
 from pathlib import Path
 import os
+import pandas as pd
 
-# Default project paths - can be overridden by user
+# ---------------------------------------------------------------------------
+# Project paths — override via set_project_root() or PB_PROJECT_ROOT env var
+# ---------------------------------------------------------------------------
 _default_root = Path(__file__).parent.parent
 PROJECT_ROOT = Path(os.environ.get('PB_PROJECT_ROOT', _default_root))
-DATA_PATH = PROJECT_ROOT / "Data"
-OUTPUT_PATH = PROJECT_ROOT / "Output"
-DOC_FILE = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
-STATIONS_FILE = PROJECT_ROOT / "Data" / "station_coordinates.csv"
+DATA_PATH    = PROJECT_ROOT / "Data"
+OUTPUT_PATH  = PROJECT_ROOT / "Output"
+DOC_FILE     = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
 
+# STATIONS_FILE is only used internally by set_project_root to load STATIONS_DF.
+# STATIONS_DF is what the rest of the package actually reads.
+STATIONS_FILE = PROJECT_ROOT / "Data" / "station_coordinates.csv"
+STATIONS_DF   = None  # populated by set_project_root(); required before computing density
+
+# ---------------------------------------------------------------------------
+# RBR cast index map — tells rbr_cast() which DOWN-cast index corresponds to
+# which station for each field day.
+#
+# Format:  folder_name → {station_name: cast_index, ...}
+#
+# When a single day used two separate xlsx files (e.g. 2025Oct20 where G1 was
+# recorded separately from the rest), the value is a nested dict keyed by a
+# substring that appears in the xlsx filename stem:
+#   folder_name → {filename_key: {station: cast_index, ...}, ...}
+# ---------------------------------------------------------------------------
 CAST_MAP = {
     '2025Oct20': {
         'G1':       {'G1': 0},
@@ -32,11 +54,24 @@ CAST_MAP = {
 
 
 def set_project_root(path):
-    """Set custom project root path."""
-    global PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE, STATIONS_FILE
-    PROJECT_ROOT = Path(path)
-    DATA_PATH = PROJECT_ROOT / "Data"
-    OUTPUT_PATH = PROJECT_ROOT / "Output"
-    DOC_FILE = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
+    """
+    Override all project paths and load station coordinates.
+
+    Must be called before any function that computes density (compute_density,
+    process_ctd) because those functions look up station lat/lon from STATIONS_DF.
+
+    Args:
+        path: New project root directory (string or Path).  Expected layout:
+              <path>/Data/               — raw CTD and bottle files
+              <path>/Output/             — processed output
+              <path>/DOC_info/           — DOC Excel file
+              <path>/Data/station_coordinates.csv  — station lat/lon table
+    """
+    global PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE, STATIONS_FILE, STATIONS_DF
+    PROJECT_ROOT  = Path(path)
+    DATA_PATH     = PROJECT_ROOT / "Data"
+    OUTPUT_PATH   = PROJECT_ROOT / "Output"
+    DOC_FILE      = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
     STATIONS_FILE = PROJECT_ROOT / "Data" / "station_coordinates.csv"
+    STATIONS_DF   = pd.read_csv(STATIONS_FILE)
 

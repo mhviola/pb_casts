@@ -3,9 +3,45 @@ Utility functions for Padilla Bay CTD processing.
 """
 import pandas as pd
 import gsw
+from . import config
 
 
-def compute_density(df, lat=48.5, lon=-122.5,
+class CastFrame(pd.DataFrame):
+    """
+    DataFrame subclass for CTD cast data that preserves instrument metadata
+    through pandas operations (slicing, copy, resample, etc.).
+
+    Metadata is stored in the ``cast_meta`` attribute as a plain dict and is
+    automatically propagated by pandas via the ``_metadata`` mechanism.
+
+    Keys used by pb_casts:
+        station          – station name string (e.g. 'S1')
+        instrument_type  – 'sbe' or 'rbr'
+        time             – cast start timestamp (pandas Timestamp)
+        atmospheric_pressure – float, dbar (RBR casts only)
+    """
+    _metadata = ['cast_meta']
+
+    @property
+    def _constructor(self):
+        return CastFrame
+
+    @property
+    def cast_meta(self):
+        return self.__dict__.get('_cast_meta', {})
+
+    @cast_meta.setter
+    def cast_meta(self, value):
+        self.__dict__['_cast_meta'] = value if value is not None else {}
+
+    def __finalize__(self, other, method=None, **kwargs):
+        super().__finalize__(other, method=method, **kwargs)
+        if hasattr(other, 'cast_meta'):
+            self.cast_meta = other.cast_meta
+        return self
+
+
+def compute_density(df,
                     sal_col='sal00', temp_col='tv290C',
                     pressure_col=None):
     """
@@ -22,11 +58,6 @@ def compute_density(df, lat=48.5, lon=-122.5,
     df : pandas.DataFrame
         Cast DataFrame.  Pressure is taken from the index (as returned by
         python-ctd / pb_casts.sbe_cast) unless *pressure_col* is given.
-    lat : float, optional
-        Station latitude in decimal degrees North.  Default 48.5 (Padilla Bay).
-    lon : float, optional
-        Station longitude in decimal degrees East (negative = West).
-        Default -122.5 (Padilla Bay).
     sal_col : str, optional
         Column name for Practical Salinity [PSU].  Default 'sal00'.
     temp_col : str, optional
@@ -52,22 +83,52 @@ def compute_density(df, lat=48.5, lon=-122.5,
     >>> down = pb_casts.compute_density(down)
     >>> down[['sal00', 'tv290C', 'rho', 'sigma0']].head()
     """
+    meta = df.cast_meta if isinstance(df, CastFrame) else (
+           df._metadata if isinstance(df._metadata, dict) else {})
+    station = meta.get('station')
+    if station is None:
+        raise ValueError(
+            "DataFrame has no 'station' metadata. "            "Load data via pb_casts.sbe_cast() or pb_casts.rbr_cast()."
+        )
+    if config.STATIONS_DF is None:
+        raise RuntimeError(
+            "Station coordinates not loaded. Call pb_casts.set_project_root('/path/to/project') first."
+        )
+    matches = config.STATIONS_DF[config.STATIONS_DF.name == station]
+    if matches.empty:
+        raise ValueError(
+            f"Station '{station}' not found in station_coordinates.csv. "
+            f"Available: {config.STATIONS_DF.name.tolist()}"
+        )
+    lat = matches.lat.values[0]
+    lon = matches.lon.values[0]
     df = df.copy()
-
     p  = df[pressure_col] if pressure_col else df.index.to_series()
     SP = df[sal_col]
     t  = df[temp_col]
 
     SA = gsw.SA_from_SP(SP, p, lon, lat)
     CT = gsw.CT_from_t(SA, t, p)
-    df['rho'] = gsw.rho(SA, CT, p)
+    df['rho0'] = gsw.rho(SA, CT, p)-1000
     df['sigma0'] = gsw.sigma0(SA, CT)
 
     return df
 
 
 def detect_precision(series, max_decimals=6):
-    """Detect decimal places in a data series. Returns max precision found."""
+    """
+    Infer the number of decimal places used in a numeric Series.
+
+    Inspects up to 100 non-NaN values and returns the maximum number of
+    significant decimal digits found.  Used by process_ctd() to round
+    processed output to match the original sensor resolution.
+
+    Args:
+        series:       Numeric pandas Series.
+        max_decimals: Upper bound on decimal places to check (default 6).
+
+    Returns: int — decimal precision (0 if all integers, 4 if series is empty).
+    """
     sample = series.dropna().head(100)
     if len(sample) == 0:
         return 4
@@ -84,7 +145,13 @@ def detect_precision(series, max_decimals=6):
 
 
 def parse_folder_date(folder_name):
-    """Parse date from folder name like '2025Aug20' -> datetime."""
+    """
+    Parse a date from a folder name in the format 'YYYYMon##' (e.g. '2025Aug20').
+
+    Returns a pandas Timestamp on success, or None if the name does not match
+    the expected pattern.  Used by batch functions to attach a cast date to
+    processed output.
+    """
     month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
                  'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
                  'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}

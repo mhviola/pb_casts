@@ -3,7 +3,36 @@ CTD data processing functions for Padilla Bay.
 """
 import numpy as np
 import pandas as pd
-from .utils import detect_precision
+from .utils import detect_precision, compute_density, CastFrame
+
+# ── Processing constants ──────────────────────────────────────────────────────
+# Edit these to change behaviour; dataset attrs are derived from them directly.
+
+COMMON_PARAMS = {
+    'depth_bin_size_m':                 0.25,
+    'surface_noise_method':             'stability',
+    'surface_noise_gradient_threshold': 0.02,
+    'surface_noise_n_stable':           5,
+    'surface_noise_min_depth_m':        0.25,
+    'despike_n1':                       2,
+    'despike_n2':                       20,
+    'lp_filter_time_constant_s':        0.15,
+    'smoothing_window':                 'hanning',
+    'density_standard':                 'TEOS-10 (gsw)',
+}
+
+SBE_PARAMS = {
+    'sbe_sample_rate_hz':       4.0,
+    'sbe_despike_block':        75,
+    'sbe_smooth_window_pts':    11,
+}
+
+RBR_PARAMS = {
+    'rbr_sample_rate_hz':       8.0,
+    'rbr_despike_block':        100,
+    'rbr_smooth_window_pts':    5,
+}
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def remove_surface_noise(cast_df, method='stability', depth_threshold=0.5, 
@@ -26,7 +55,7 @@ def remove_surface_noise(cast_df, method='stability', depth_threshold=0.5,
     
     elif method == 'stability':
         # Find where salinity stabilizes over n_stable consecutive points
-        den_gradient = working_df['density'].diff().abs()
+        den_gradient = working_df['sigma0'].diff().abs()
         
         # Create rolling check: all of the last n_stable gradients must be below threshold
         is_stable = den_gradient < gradient_threshold
@@ -92,24 +121,30 @@ def remove_surface_noise(cast_df, method='stability', depth_threshold=0.5,
 
 def process_ctd(df, smooth=True, columns=None):
     """
-    Process CTD data: despike, lp_filter, press_check, interpolate, bin, smooth.
-    
+    Full CTD processing pipeline: surface-noise removal → despike → low-pass
+    filter → pressure check → interpolation → 0.25 m depth binning → smoothing.
+
+    Processing parameters (sample rate, despike block, smooth window) are
+    selected automatically from SBE_PARAMS / RBR_PARAMS based on
+    df.cast_meta['instrument_type'].  The cast must have been loaded via
+    sbe_cast() or rbr_cast() for the metadata to be present.
+
     Args:
-        df: CTD DataFrame with depth/pressure as index
-        SHOULD BE IN METADATA:
-            instrument_type: 'sbe' (4 Hz) or 'rbr' (8 Hz)
-            time: Cast start datetime
-        smooth: Apply hanning smoothing (default True)
-        columns: Columns to process (default: all numeric except timeS, bottle cols)
-    
-    Returns: Processed DataFrame with 0.25m depth bins
+        df:      CastFrame with pressure/depth as index and cast_meta populated.
+        smooth:  Apply Hanning-window smoothing after binning (default True).
+        columns: Columns to run through the QC pipeline.  Defaults to all
+                 numeric columns except timeS, bottle_number, and doc_conc.
+
+    Returns: Processed CastFrame with 0.25 m depth bins and cast_meta preserved.
     """
-    # Determine columns to process
+    df = compute_density(df)
+
     exclude_cols = ['timeS', 'bottle_number', 'doc_conc']
-    # saves datetime column if there is one
+
+    # Stash any datetime column so it can be re-interpolated after binning
+    # (datetime columns cannot go through the numeric QC chain).
     date_cols = [col for col in df.columns if np.issubdtype(df[col].dtype, np.datetime64)]
     num_date_cols = len(date_cols)
-    date_cols_series = [df[col] for col in date_cols]
     if num_date_cols == 0:
         datetime_df = None
     elif num_date_cols == 1:
@@ -127,41 +162,50 @@ def process_ctd(df, smooth=True, columns=None):
     # Store bottle columns before processing
     bottle_data = {col: df[col].copy() for col in bottle_cols if col in df.columns}
     # Set parameters based on instrument type
-    if df._metadata['instrument_type'].lower() == 'rbr':
-        # RBR CTD 
-        sample_rate = 8.0
-        despike_block = 100
-        smooth_window = 5
-    elif df._metadata['instrument_type'].lower() == 'sbe':
-        # SBE 19plus V2 (4 Hz = 0.25s interval)
-        sample_rate = 4.0
-        despike_block = 75
-        smooth_window = 11
-
+    meta = df.cast_meta if isinstance(df, CastFrame) else (
+           df._metadata if isinstance(df._metadata, dict) else {})
+    instrument_type = meta.get('instrument_type')
+    if instrument_type is None:
+        raise ValueError(
+            "DataFrame has no 'instrument_type' metadata. "            "Load data via pb_casts.sbe_cast() or pb_casts.rbr_cast()."
+        )
+    if instrument_type.lower() == 'rbr':
+        sample_rate   = RBR_PARAMS['rbr_sample_rate_hz']
+        despike_block = RBR_PARAMS['rbr_despike_block']
+        smooth_window = RBR_PARAMS['rbr_smooth_window_pts']
+    elif instrument_type.lower() == 'sbe':
+        sample_rate   = SBE_PARAMS['sbe_sample_rate_hz']
+        despike_block = SBE_PARAMS['sbe_despike_block']
+        smooth_window = SBE_PARAMS['sbe_smooth_window_pts']
     else:
-        raise ValueError(f"Invalid instrument type: {df._metadata['instrument_type']}")
+        raise ValueError(f"Invalid instrument type: {instrument_type}")
 
-    # Common parameters optimized for Padilla Bay halocline studies
-    bin_delta = 0.25
-    df_clean = remove_surface_noise(df, method='stability', gradient_threshold=0.02, n_stable=5, min_depth=0.25)
+    bin_delta = COMMON_PARAMS['depth_bin_size_m']
+    df_clean = remove_surface_noise(
+        df,
+        method=COMMON_PARAMS['surface_noise_method'],
+        gradient_threshold=COMMON_PARAMS['surface_noise_gradient_threshold'],
+        n_stable=COMMON_PARAMS['surface_noise_n_stable'],
+        min_depth=COMMON_PARAMS['surface_noise_min_depth_m'],
+    )
     if len(df_clean) == 0:
         raise ValueError(
-            f"Cast at {df._metadata['station']} on {df._metadata['time']} is empty after "
+            f"Cast at {meta.get('station','?')} on {meta.get('time','?')} is empty after "
             "surface-noise removal — check the raw data or relax remove_surface_noise parameters."
         )
     # Cap block size to the actual data length — despike raises an error if
     # len(df_clean) < block. Short casts still go through the full pipeline; a
     # smaller block just means tighter local statistics for spike detection.
     if despike_block > len(df_clean):
-        print(f"Warning: short cast at {df._metadata['station']} on {df._metadata['time']} "
+        print(f"Warning: short cast at {meta.get('station','?')} on {meta.get('time','?')} "
               f"({len(df_clean)} rows); capping despike block from {despike_block} to {len(df_clean)}.")
         despike_block = len(df_clean)
     # Process the selected columns (without bindata first to preserve surface data)
     
     proc_df = (
         df_clean[cols_to_process]
-        .despike(n1=2, n2=20, block=despike_block)
-        .lp_filter(sample_rate=sample_rate, time_constant=0.15)
+        .despike(n1=COMMON_PARAMS['despike_n1'], n2=COMMON_PARAMS['despike_n2'], block=despike_block)
+        .lp_filter(sample_rate=sample_rate, time_constant=COMMON_PARAMS['lp_filter_time_constant_s'])
         .press_check()
         .interpolate(method="index", limit_direction="both", limit_area="inside")
     )
@@ -198,7 +242,7 @@ def process_ctd(df, smooth=True, columns=None):
         # Round to instrument sampling precision
         time_resolution = 1.0 / sample_rate  # 0.25s for 4Hz, 0.125s for 8Hz
         proc_df['timeS'] = np.round(proc_df['timeS'] / time_resolution) * time_resolution
-        proc_df['time_local'] = df._metadata['time'] + pd.to_timedelta(proc_df['timeS'], unit='s')
+        proc_df['time_local'] = meta.get('time') + pd.to_timedelta(proc_df['timeS'], unit='s')
     elif datetime_df is not None:
         time_resolution = 1.0 / sample_rate
         # Convert datetime to numeric (timestamps), interpolate, then convert back
@@ -206,7 +250,6 @@ def process_ctd(df, smooth=True, columns=None):
         interpolated_numeric = np.interp(new_index, df.index.values, datetime_numeric)
         rounded_numeric = np.round(interpolated_numeric / time_resolution) * time_resolution
         proc_df['time_local'] = pd.to_datetime(rounded_numeric, unit='s')
-# I had a better way of doing this but lost it somewhere :/ this works
 
     # Re-add bottle columns using nearest neighbor interpolation
     # This preserves bottle values at their original depths and NaNs elsewhere
@@ -232,5 +275,7 @@ def process_ctd(df, smooth=True, columns=None):
                         proc_df.iloc[i, proc_df.columns.get_loc(col)] = np.nan
     
         
-    return proc_df
+    result = CastFrame(proc_df)
+    result.cast_meta = meta
+    return result
 

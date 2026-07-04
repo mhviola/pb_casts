@@ -1,15 +1,13 @@
 """
 Setup configuration for pb_casts package.
 """
-from setuptools import setup, find_packages
+from setuptools import setup
 from pathlib import Path
 
-# Read requirements
-requirements = []
+# requirements.txt is read here for reference but install_requires below uses
+# a pinned list instead so that conda-only deps (e.g. python-ctd) don't break
+# a plain `pip install`.
 req_file = Path(__file__).parent / 'requirements.txt'
-if req_file.exists():
-    with open(req_file) as f:
-        requirements = [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
 # Read README
 readme = ''

@@ -1,11 +1,9 @@
-
 """
 Batch processing functions for multiple CTD files.
 """
 import re
-import pandas as pd
 from pathlib import Path
-from .config import DATA_PATH, OUTPUT_PATH, DOC_FILE
+from . import config
 from .io import sbe_cast, rbr_cast, load_bottle_file
 from .processing import process_ctd
 from .utils import parse_folder_date
@@ -20,9 +18,9 @@ def process_bl_doc_files(data_path=None, output_path=None, doc_file=None):
         output_path: Path to output directory (default: OUTPUT_PATH from config)
         doc_file: Path to DOC excel file (default: DOC_FILE from config)
     """
-    data_path = Path(data_path) if data_path else DATA_PATH
-    output_path = Path(output_path) if output_path else OUTPUT_PATH
-    doc_file = Path(doc_file) if doc_file else DOC_FILE
+    data_path = Path(data_path) if data_path else config.DATA_PATH
+    output_path = Path(output_path) if output_path else config.OUTPUT_PATH
+    doc_file = Path(doc_file) if doc_file else config.DOC_FILE
     
     output_dir = output_path / "bl_doc_files"
     output_dir.mkdir(exist_ok=True)
@@ -51,7 +49,7 @@ def process_bl_doc_files(data_path=None, output_path=None, doc_file=None):
     print("Processing complete!")
 
 
-def batch_process_all(data_path=None, output_path=None, station_file=None, overwrite=False):
+def batch_process_all(data_path=None, output_path=None, overwrite=False):
     """
     Process all CTD casts in yearMON## folders (e.g. 2025Aug20).
     Handles SBE (CNV) and RBR (XLSX) data automatically.
@@ -60,12 +58,10 @@ def batch_process_all(data_path=None, output_path=None, station_file=None, overw
     Args:
         data_path: Path to Data folder (default: DATA_PATH from config)
         output_path: Where to save output parquet files (default: OUTPUT_PATH/casts)
-        station_file: Path to station coordinates CSV (default: data_path/station_coordinates.csv)
         overwrite: Re-process and overwrite existing parquet files (default: False)
     """
-    data_path = Path(data_path) if data_path else DATA_PATH
-    output_path = Path(output_path) if output_path else OUTPUT_PATH / "casts"
-    station_file = Path(station_file) if station_file else data_path / "station_coordinates.csv"
+    data_path = Path(data_path) if data_path else config.DATA_PATH
+    output_path = Path(output_path) if output_path else config.OUTPUT_PATH / "casts"
 
     folder_pattern = re.compile(r'^\d{4}[A-Z][a-z]{2}\d{2}$')
     dated_folders = sorted([
@@ -126,22 +122,16 @@ def batch_process_all(data_path=None, output_path=None, station_file=None, overw
 
         # --- RBR processing ---
         if xlsx_files:
-            if station_file.exists():
-                stations_df = pd.read_csv(station_file)
-            else:
-                print(f"[{folder.name}] Warning: station_coordinates.csv not found.")
-                stations_df = pd.DataFrame({'name': []})
-
             for xlsx_file in xlsx_files:
                 try:
-                    casts = rbr_cast(str(xlsx_file), stations_df)
+                    casts = rbr_cast(str(xlsx_file))
                 except Exception as e:
                     print(f"[{folder.name}] ERROR loading {xlsx_file.name}: {e}")
                     total_errors += 1
                     continue
 
                 for i, cast_df in enumerate(casts):
-                    station = cast_df._metadata.get('station', f'cast_{i}')
+                    station = cast_df.cast_meta.get('station', f'cast_{i}')
                     out_file = out_dir / f"{station}.parquet"
 
                     if out_file.exists() and not overwrite:

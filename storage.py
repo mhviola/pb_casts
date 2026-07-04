@@ -5,7 +5,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from datetime import datetime
-from .config import PROJECT_ROOT
+from . import config
 
 
 def make_parquet(down_df, bl_down_df=None, output_dir=None):
@@ -21,7 +21,7 @@ def make_parquet(down_df, bl_down_df=None, output_dir=None):
     Returns: Path to saved parquet file
     """
     if output_dir is None:
-        parquets_dir = PROJECT_ROOT / "parquets"
+        parquets_dir = config.PROJECT_ROOT / "parquets"
     else:
         parquets_dir = output_dir
     

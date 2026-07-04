@@ -1,33 +1,32 @@
 """
 Data loading functions for SeaBird and RBR CTD data.
 """
-from traceback import print_tb
 import numpy as np
 import pandas as pd
 from pathlib import Path
 import ctd
-from .utils import compute_density
-from .processing import remove_surface_noise
-from .config import CAST_MAP, STATIONS_FILE
+from .utils import CastFrame
+from . import config
 
 
 def get_cast(file):
     """
-    Load a cast from either CNV or XLSX file format.
-    
+    Load cast(s) from either CNV (SeaBird) or XLSX (RBR) file.
+
+    Always returns a list of CastFrames so callers can iterate uniformly
+    regardless of instrument type.
+
     Args:
-        file: Path to CNV (SeaBird) or XLSX (RBR) file
-        station_file: CSV file with station names (for RBR processing)
-    
-    Returns: Cast DataFrame(s)
+        file: Path to CNV or XLSX file
+
+    Returns: List of CastFrame objects with cast_meta populated
     """
-    stations_df = pd.read_csv(STATIONS_FILE)
     if file.endswith('.cnv'):
-        
-        return sbe_cast(file, stations_df)
+        cast = sbe_cast(file)
+        cast['time'] = cast.cast_meta['time'] + pd.to_timedelta(cast['timeS'], unit='s')
+        return [cast]
     elif file.endswith('.xlsx'):
-        
-        return rbr_cast(file, stations_df)
+        return rbr_cast(file)
     else:
         raise ValueError(f"Unsupported file type: {file}")
 
@@ -35,58 +34,78 @@ def get_cast(file):
 
 
 
-def station_from_path(file, stations_df):
-    stations_sorted = sorted(stations_df['name'], key=len, reverse=True)
-    print(stations_sorted)
-    # e.g. ['G1', 'G2', 'S1', 'S2', 'B']  — multi-char before single-char
-    stem = Path(file).stem  # 'BNTS', 'G1NTS', 'BB', 'G1', etc.
+def station_from_path(file):
+    """
+    Infer station name from a file's stem by matching against known station names.
+
+    Sorts station names longest-first so that multi-character names (e.g. 'G1')
+    are matched before single-character ones (e.g. 'B') when a stem starts with
+    both (e.g. 'G1NTS' → 'G1', not 'G').
+
+    Args:
+        file: Path to any CTD file whose stem encodes the station (e.g. 'S1NTS.cnv')
+
+    Returns: Station name string, or None if no match found.
+    """
+    stations_sorted = sorted(config.STATIONS_DF['name'], key=len, reverse=True)
+    stem = Path(file).stem  # e.g. 'BNTS', 'G1NTS', 'S1'
     return next((s for s in stations_sorted if stem.startswith(s)), None)
 
-def sbe_cast(cnv_file, stations_df):
+def sbe_cast(cnv_file):
     """
-    Load and split SeaBird CNV file into downcast.
-    
-    Returns: (down_df)
-    """
+    Load a SeaBird CNV file and return the downcast as a CastFrame.
 
+    Uses python-ctd to parse the CNV, drops instrument-specific channels that
+    are not used downstream (transmissometer, PAR, oxygen %, etc.), then splits
+    into down/up casts.  The upcast is discarded; a zero-length upcast triggers
+    a RuntimeError because it usually means the cast file is truncated or the
+    split heuristic failed.
+
+    Args:
+        cnv_file: Path to a *NTS.cnv SeaBird file.
+
+    Returns: CastFrame with cast_meta = {station, instrument_type, time}
+    """
     cast_df = ctd.from_cnv(cnv_file)
-    station = station_from_path(cnv_file, stations_df)
-
-    cast_df._metadata['station'] = station
-    lat = stations_df[stations_df.name == station].lat.values[0]
-    lon = stations_df[stations_df.name == station].lon.values[0]
-    # Store metadata before processing
-    cast_df._metadata['instrument_type'] = 'sbe'
-    metadata = cast_df._metadata.copy()
-    cast_df = compute_density(cast_df, lat=lat, lon=lon)
+    station = station_from_path(cnv_file)
+    start_time = cast_df._metadata.get('time')
+    meta = {'station': station, 'instrument_type': 'sbe', 'time': start_time}
     # Drop unused sensor columns
     drop_cols = ['CStarAt0', 'CStarTr0', 'par', 'wetStar', 'sbeox0PS', 'v4', 'flag', 'scan', 'c0S/m', 'potemp090C']
     cast_df.drop(columns=[c for c in drop_cols if c in cast_df.columns], inplace=True)
-    
+
     down_df, up_df = cast_df.split()
+
+    down_cast = CastFrame(down_df)
+    down_cast.cast_meta = meta
+    up_cast = CastFrame(up_df)
+    up_cast.cast_meta = meta
     
-    # Restore metadata after split
-    down_df._metadata = metadata
-    up_df._metadata = metadata
-    
-    if len(up_df) == 0:
+    if len(up_cast) == 0:
         raise RuntimeError("Cast split failed - check data quality")
 
-    return down_df
+    return down_cast
 
 
-def rbr_cast(excel_file, stations_df, recasts: dict[str, int] | list[int] = None):
+def rbr_cast(excel_file, recasts: dict[str, int] | None = None):
     """
-    Split RBR excel export into individual station casts, saving as parquet files.
-    
+    Split an RBR Excel export into per-station downcast CastFrames.
+
+    The RBR instrument records all casts in a single Excel file.  This function
+    reads the 'Data', 'Profile annotation', and 'Metadata' sheets, isolates each
+    DOWN cast segment, subtracts atmospheric pressure, and wraps each segment in
+    a CastFrame.
+
     Args:
-        excel_file: RBR excel export path
-        stations_df: DataFrame with station names (must have 'name' column)
-        recasts: Optional mapping of station names to good cast indices, e.g.
-                 {'G1': 0, 'G2': 1, 'S1': 3}.  Can also be a plain list of
-                 integer indices.  When provided, only those casts are returned.
-    
-    Returns: List of cast DataFrames
+        excel_file: Path to an RBR Excel export.
+        recasts: Dict mapping station names to downcast indices, e.g.
+                 {'G1': 0, 'G2': 1, 'S1': 3}.  When None (default), the mapping
+                 is looked up automatically from config.CAST_MAP using the parent
+                 folder name as the key.  When CAST_MAP has no entry for the
+                 folder, all detected DOWN casts are returned as 'cast_0',
+                 'cast_1', …
+
+    Returns: List of CastFrames, one per station, with cast_meta populated.
     """
 
     cols = ['Time', 'Temperature', 'Pressure', 'Depth', 'Salinity', 'Density anomaly']
@@ -105,12 +124,14 @@ def rbr_cast(excel_file, stations_df, recasts: dict[str, int] | list[int] = None
     # Nested entries (e.g. '2025Oct20') are matched by xlsx filename stem.
     if recasts is None:
         folder_key = Path(excel_file).parent.name
-        entry = CAST_MAP.get(folder_key)
+        entry = config.CAST_MAP.get(folder_key)
         if entry is not None:
             if entry and isinstance(next(iter(entry.values())), dict):
                 stem = Path(excel_file).stem
+                # Sort longest key first so 'allbutG1' matches before 'G1'
                 recasts = next(
-                    (v for k, v in entry.items() if stem.endswith(k) or f'_{k}' in stem),
+                    (v for k, v in sorted(entry.items(), key=lambda x: len(x[0]), reverse=True)
+                     if stem.endswith(k) or f'_{k}' in stem),
                     None,
                 )
             else:
@@ -137,14 +158,15 @@ def rbr_cast(excel_file, stations_df, recasts: dict[str, int] | list[int] = None
 
         df = rbr_df[(rbr_df.Time >= down_prof_df.start_t[i]) & 
                     (rbr_df.Time <= down_prof_df.end_t[i])].copy()
+        # Subtract atmospheric pressure so index represents gauge pressure (dbar)
         df['Pressure'] = df['Pressure'] - atm_pressure
         df.index = df.Pressure
-        # Need to remove some data before consistent data
 
         station = recast_map[i] if recast_map is not None else f'cast_{i}'
-        df._metadata = {'atmospheric_pressure': atm_pressure, 'instrument_type': 'rbr',
-                        'time': df.Time.iloc[0], 'station': station}
-        dfs.append(df)
+        cast = CastFrame(df)
+        cast.cast_meta = {'atmospheric_pressure': atm_pressure, 'instrument_type': 'rbr',
+                          'time': df.Time.iloc[0], 'station': station}
+        dfs.append(cast)
 
     return dfs
 
@@ -186,6 +208,8 @@ def load_bottle_file(bl_file, doc_file=None):
     return bl_df
 
 
-# Backward-compatible alias (formerly update_DOC_file in ctd_step1.py)
+# DEAD CODE — legacy alias from the original ctd_step1.py script.
+# Not called anywhere in the package; kept only for backward compatibility
+# with any external scripts that may still reference it.
 update_DOC_file = load_bottle_file
 
