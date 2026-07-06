@@ -20,7 +20,7 @@ setup(
     name='pb_casts',
     version='0.1.0',
     author='Marisa Viola',
-    author_email='your.email@wwu.edu',
+    author_email='violam@wwu.edu',
     description='CTD data processing package for Padilla Bay research',
     long_description=readme,
     long_description_content_type='text/markdown',

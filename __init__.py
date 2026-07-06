@@ -43,7 +43,7 @@ from .io import sbe_cast, rbr_cast, get_cast, load_bottle_file, station_from_pat
 from .processing import process_ctd, remove_surface_noise
 from .plotting import plot_ts, from_file_to_plot, plot_bl_files
 from .storage import make_parquet
-from .batch import process_bl_doc_files, batch_process_all
+from .batch import process_bl_doc_files, batch_process_all, review_surface_cutoffs, load_surface_cutoffs, plot_cutoff_check
 from .dataset import create_ctd_dataset
 from .utils import detect_precision, parse_folder_date, compute_density, CastFrame
 from .config import set_project_root, PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE
@@ -70,6 +70,9 @@ __all__ = [
     # Batch processing
     'process_bl_doc_files',
     'batch_process_all',
+    'review_surface_cutoffs',
+    'load_surface_cutoffs',
+    'plot_cutoff_check',
     
     # Dataset creation
     'create_ctd_dataset',

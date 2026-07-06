@@ -32,8 +32,6 @@ def get_cast(file):
 
 
 
-
-
 def station_from_path(file):
     """
     Infer station name from a file's stem by matching against known station names.
@@ -50,6 +48,7 @@ def station_from_path(file):
     stations_sorted = sorted(config.STATIONS_DF['name'], key=len, reverse=True)
     stem = Path(file).stem  # e.g. 'BNTS', 'G1NTS', 'S1'
     return next((s for s in stations_sorted if stem.startswith(s)), None)
+
 
 def sbe_cast(cnv_file):
     """
@@ -108,7 +107,7 @@ def rbr_cast(excel_file, recasts: dict[str, int] | None = None):
     Returns: List of CastFrames, one per station, with cast_meta populated.
     """
 
-    cols = ['Time', 'Temperature', 'Pressure', 'Depth', 'Salinity', 'Density anomaly']
+    cols = ['Time', 'Temperature', 'Pressure', 'Depth', 'Salinity']
     rbr_df = pd.read_excel(excel_file, sheet_name='Data', header=1, usecols=cols)
     profs_df = pd.read_excel(excel_file, sheet_name='Profile annotation', header=1, 
                               names=['start_t', 'end_t', 'lab', 'Type'])
@@ -118,7 +117,7 @@ def rbr_cast(excel_file, recasts: dict[str, int] | None = None):
     atm_pressure = float(metadata_df.iloc[indices[0][0] + 1, indices[1][0]])
     down_prof_df = profs_df[profs_df.Type == 'DOWN'].reset_index(drop=True)
     # rename columns to match sbe format
-    rbr_df.columns = ['Time', 'tv290C', 'Pressure', 'depSM', 'sal00', 'density']
+    rbr_df.columns = ['Time', 'tv290C', 'Pressure', 'depSM', 'sal00']
     # Auto-resolve recasts from CAST_MAP when not explicitly provided.
     # Uses the parent folder name (e.g. '2025Nov18') as the CAST_MAP key.
     # Nested entries (e.g. '2025Oct20') are matched by xlsx filename stem.
@@ -206,10 +205,4 @@ def load_bottle_file(bl_file, doc_file=None):
         bl_df['doc_conc'] = np.nan
     
     return bl_df
-
-
-# DEAD CODE — legacy alias from the original ctd_step1.py script.
-# Not called anywhere in the package; kept only for backward compatibility
-# with any external scripts that may still reference it.
-update_DOC_file = load_bottle_file
 

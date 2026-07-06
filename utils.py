@@ -1,6 +1,7 @@
 """
 Utility functions for Padilla Bay CTD processing.
 """
+import re
 import pandas as pd
 import gsw
 from . import config
@@ -71,8 +72,8 @@ def compute_density(df,
     pandas.DataFrame
         A copy of *df* with two new columns added:
 
-        ``rho``
-            In situ density [kg/m³].
+        ``rho0``
+            In situ density anomaly [kg/m³ − 1000]  (i.e. gsw.rho − 1000).
         ``sigma0``
             Potential density anomaly referenced to 0 dbar [kg/m³ − 1000].
             Matches the scale of the RBR 'Density anomaly' / 'density' column.
@@ -88,16 +89,19 @@ def compute_density(df,
     station = meta.get('station')
     if station is None:
         raise ValueError(
-            "DataFrame has no 'station' metadata. "            "Load data via pb_casts.sbe_cast() or pb_casts.rbr_cast()."
+            "DataFrame has no 'station' metadata. "
+            "Load data via pb_casts.sbe_cast() or pb_casts.rbr_cast()."
         )
     if config.STATIONS_DF is None:
         raise RuntimeError(
             "Station coordinates not loaded. Call pb_casts.set_project_root('/path/to/project') first."
         )
-    matches = config.STATIONS_DF[config.STATIONS_DF.name == station]
+    # Strip repeat suffix (e.g. 'S1b', 'G1c' → 'S1', 'G1') before coordinate lookup
+    base_station = re.sub(r'[a-z]+$', '', station)
+    matches = config.STATIONS_DF[config.STATIONS_DF.name == base_station]
     if matches.empty:
         raise ValueError(
-            f"Station '{station}' not found in station_coordinates.csv. "
+            f"Station '{station}' (base: '{base_station}') not found in station_coordinates.csv. "
             f"Available: {config.STATIONS_DF.name.tolist()}"
         )
     lat = matches.lat.values[0]

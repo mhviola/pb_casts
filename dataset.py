@@ -11,6 +11,7 @@ from . import config
 from .io import get_cast
 from .processing import process_ctd, COMMON_PARAMS, SBE_PARAMS, RBR_PARAMS
 from .utils import parse_folder_date
+from .batch import load_surface_cutoffs
 
 
 # CF-convention variable metadata: long_name, units, standard_name
@@ -22,7 +23,6 @@ VAR_ATTRS: dict[str, dict] = {
     'depSM':    {'long_name': 'Depth',                         'units': 'm',      'standard_name': 'depth'},
     'sigma0':   {'long_name': 'Potential Density Anomaly σ₀',  'units': 'kg m-3', 'standard_name': 'sea_water_sigma_theta'},
     'rho0':     {'long_name': 'In Situ Density Anomaly',       'units': 'kg m-3', 'standard_name': 'sea_water_density'},
-    'density':  {'long_name': 'Density Anomaly',               'units': 'kg m-3', 'standard_name': 'sea_water_sigma_theta'},
 }
 
 # Processing parameters — derived directly from processing.py constants
@@ -43,7 +43,7 @@ def _parse_station_repeat(raw_station: str) -> tuple[str, int]:
     return base, repeat
 
 
-def create_ctd_dataset():
+def create_ctd_dataset(surface_cutoffs_file=None):
     """
     Create xarray Dataset from all CNV (SBE) and XLSX (RBR) files in DATA_PATH.
 
@@ -51,8 +51,19 @@ def create_ctd_dataset():
       - repeat=0  primary cast, repeat=1 first repeat ('b'), repeat=2 second ('c'), …
       - cast_time coordinate holds the actual timestamp for each (station, date, repeat)
       - Missing combinations and depths outside a cast's range are filled with NaN.
+
+    Args:
+        surface_cutoffs_file: Optional path to the CSV produced by
+            review_surface_cutoffs().  When provided, each cast's surface
+            cutoff is looked up by '{folder}_{station}' key and passed to
+            process_ctd() as surface_cutoff_m, overriding the automatic
+            stability algorithm for that cast.
     """
     data_path = config.DATA_PATH
+    cutoffs: dict = {}
+    if surface_cutoffs_file is not None:
+        cutoffs = load_surface_cutoffs(surface_cutoffs_file)
+        print(f"Loaded {len(cutoffs)} manual surface cutoffs from {surface_cutoffs_file}")
     # key: (base_station, date, repeat_index)  value: processed DataFrame
     data_dict: dict[tuple[str, pd.Timestamp, int], pd.DataFrame] = {}
     cast_times: dict[tuple[str, pd.Timestamp, int], pd.Timestamp] = {}
@@ -80,7 +91,10 @@ def create_ctd_dataset():
                 label = raw_station if repeat == 0 else f"{base} repeat {repeat}"
                 print(f"Processing: {label} on {date.date()}")
 
-                proc_df = process_ctd(cast)
+                folder_name   = Path(fpath).parent.name
+                cutoff_key    = f"{folder_name}_{raw_station}"
+                cutoff_depth  = cutoffs.get(cutoff_key)
+                proc_df = process_ctd(cast, surface_cutoff_m=cutoff_depth)
                 data_dict[key]  = proc_df
                 cast_times[key] = cast.cast_meta.get('time')
 
