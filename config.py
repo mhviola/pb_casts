@@ -13,10 +13,11 @@ import pandas as pd
 # Project paths — override via set_project_root() or PB_PROJECT_ROOT env var
 # ---------------------------------------------------------------------------
 _default_root = Path(__file__).parent.parent
-PROJECT_ROOT = Path(os.environ.get('PB_PROJECT_ROOT', _default_root))
-DATA_PATH    = PROJECT_ROOT / "Data"
-OUTPUT_PATH  = PROJECT_ROOT / "Output"
-DOC_FILE     = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
+PROJECT_ROOT   = Path(os.environ.get('PB_PROJECT_ROOT', _default_root))
+DATA_PATH      = PROJECT_ROOT / "Data"
+OUTPUT_PATH    = PROJECT_ROOT / "Output"
+DOC_FILE       = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
+CASTAWAY_PATH  = PROJECT_ROOT / "Data" / "CastAway_profiles"
 
 # STATIONS_FILE is only used internally by set_project_root to load STATIONS_DF.
 # STATIONS_DF is what the rest of the package actually reads.
@@ -42,10 +43,10 @@ CAST_MAP = {
     '2025Nov18': {'G1': 0, 'G2': 1, 'S2': 3, 'S1': 5, 'B': 6},
     '2025Dec10': {'G1': 0, 'G2': 1, 'S2': 3, 'S1': 4, 'B': 5},
     '2026Jan12': {'G1': 0, 'G2': 1, 'S2': 2, 'S1': 3, 'B': 4},
-    '2026Jan26': {'G1': 0, 'G2': 1, 'B': 2, 'S2': 3, 'S1': 4, 'S1b': 5, 'S1c': 6, 'S1d': 7, 'S1e': 8},
+    '2026Jan26': {'G1': 0, 'G2': 1, 'B': 3, 'S2': 4, 'S1': 5, 'S1b': 6, 'S1c': 7, 'S1d': 8, 'S1e': 9},
     '2026Feb17': {'G1': 0, 'G2': 5, 'S2': 1, 'S1': 2, 'B': 3},
     '2026Mar16': {'G1': 0, 'G2': 1, 'S2': 3, 'S1': 4, 'B': 5},
-    '2026Apr16': {'G1': 0, 'G2': 2, 'S2': 3, 'S1': 4, 'B': 5},
+    '2026Apr16': {'G1': 0, 'G2': 2, 'S2': 3, 'S1': 5, 'B': 6},
     '2026May15': {'G1': 0, 'G2': 1},
     '2026Jun02': {'G1': 0, 'G2': 2, 'S2': 3, 'S1': 5, 'B': 7},
     '2026Jun09': {'G1': 0, 'G2': 1, 'S2': 2, 'S1': 3, 'B': 4},
@@ -65,13 +66,15 @@ def set_project_root(path):
               <path>/Data/               — raw CTD and bottle files
               <path>/Output/             — processed output
               <path>/DOC_info/           — DOC Excel file
+              <path>/Data/CastAway_profiles/  — CastAway CSV files (Viola_* subfolders)
               <path>/Data/station_coordinates.csv  — station lat/lon table
     """
-    global PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE, STATIONS_FILE, STATIONS_DF
+    global PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE, CASTAWAY_PATH, STATIONS_FILE, STATIONS_DF
     PROJECT_ROOT  = Path(path)
     DATA_PATH     = PROJECT_ROOT / "Data"
     OUTPUT_PATH   = PROJECT_ROOT / "Output"
     DOC_FILE      = PROJECT_ROOT / "DOC_info" / "DOCdepth_profiles.xlsx"
+    CASTAWAY_PATH = PROJECT_ROOT / "Data" / "CastAway_profiles"
     STATIONS_FILE = PROJECT_ROOT / "Data" / "station_coordinates.csv"
     STATIONS_DF   = pd.read_csv(STATIONS_FILE)
 

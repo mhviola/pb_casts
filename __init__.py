@@ -40,20 +40,21 @@ __version__ = '0.1.0'
 __author__ = 'Marisa Viola'
 
 # Import key functions for convenient access
-from .io import (sbe_cast, rbr_cast, get_cast, load_bottle_file, station_from_path,
-                 castaway_cast, build_castaway_doc)
+from .io import (sbe_cast, rbr_cast, sbe_hex_cast, get_cast, load_bottle_file,
+                 station_from_path, castaway_cast, build_castaway_doc)
 from .processing import process_ctd, remove_surface_noise
 from .plotting import plot_ts, from_file_to_plot, plot_bl_files
 from .storage import make_parquet
-from .batch import process_bl_doc_files, batch_process_all, review_surface_cutoffs, load_surface_cutoffs, plot_cutoff_check
+from .batch import process_bl_doc_files, batch_process_all, review_surface_cutoffs, load_surface_cutoffs, plot_cutoff_check, plot_multi_instrument_pdf, fill_manual_depths
 from .dataset import create_ctd_dataset
 from .utils import detect_precision, parse_folder_date, compute_density, CastFrame
-from .config import set_project_root, PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE
+from .config import set_project_root, PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE, CASTAWAY_PATH
 
 __all__ = [
     # IO functions
     'sbe_cast',
     'rbr_cast',
+    'sbe_hex_cast',
     'get_cast',
     'load_bottle_file',
     'station_from_path',
@@ -77,6 +78,8 @@ __all__ = [
     'review_surface_cutoffs',
     'load_surface_cutoffs',
     'plot_cutoff_check',
+    'plot_multi_instrument_pdf',
+    'fill_manual_depths',
     
     # Dataset creation
     'create_ctd_dataset',
@@ -93,5 +96,6 @@ __all__ = [
     'DATA_PATH',
     'OUTPUT_PATH',
     'DOC_FILE',
+    'CASTAWAY_PATH',
 ]
 

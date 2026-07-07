@@ -12,13 +12,13 @@ from . import config
 
 def get_cast(file):
     """
-    Load cast(s) from a CNV (SeaBird), XLSX (RBR), or CSV (CastAway) file.
+    Load cast(s) from a CNV (SeaBird), XLSX (RBR), CSV (CastAway), or HEX (SeaBird raw) file.
 
     Always returns a list of CastFrames so callers can iterate uniformly
     regardless of instrument type.
 
     Args:
-        file: Path to CNV, XLSX, or CSV file
+        file: Path to CNV, XLSX, CSV, or HEX file
 
     Returns: List of CastFrame objects with cast_meta populated
     """
@@ -30,6 +30,8 @@ def get_cast(file):
         return rbr_cast(file)
     elif file.endswith('.csv'):
         return [castaway_cast(file)]
+    elif file.lower().endswith('.hex'):
+        return [sbe_hex_cast(file)]
     else:
         raise ValueError(f"Unsupported file type: {file}")
 
@@ -90,11 +92,226 @@ def sbe_cast(cnv_file):
     down_cast.cast_meta = meta
     up_cast = CastFrame(up_df)
     up_cast.cast_meta = meta
-    
     if len(up_cast) == 0:
         raise RuntimeError("Cast split failed - check data quality")
 
     return down_cast
+
+
+def _parse_xmlcon(xmlcon_file):
+    """
+    Parse an SBE XMLCON calibration file and return coefficient objects
+    for temperature, conductivity, and pressure sensors.
+
+    Returns: dict with keys 'temperature', 'conductivity', 'pressure'
+             each holding the matching seabirdscientific cal_coefficients dataclass,
+             or None if the sensor was not found.
+    """
+    import xml.etree.ElementTree as ET
+    from seabirdscientific import cal_coefficients as cc
+
+    tree = ET.parse(xmlcon_file)
+    root = tree.getroot()
+
+    temp_coefs = cond_coefs = pres_coefs = None
+
+    for sensor in root.iter('Sensor'):
+        temp_el = sensor.find('TemperatureSensor')
+        if temp_el is not None:
+            temp_coefs = cc.TemperatureCoefficients(
+                a0=float(temp_el.findtext('A0')),
+                a1=float(temp_el.findtext('A1')),
+                a2=float(temp_el.findtext('A2')),
+                a3=float(temp_el.findtext('A3')),
+            )
+
+        cond_el = sensor.find('ConductivitySensor')
+        if cond_el is not None:
+            # Use G/J equation (equation="1") if present, else equation="0"
+            gj = cond_el.find('Coefficients[@equation="1"]')
+            if gj is None:
+                gj = cond_el.find('Coefficients')
+            if gj is not None:
+                cond_coefs = cc.ConductivityCoefficients(
+                    g=float(gj.findtext('G') or 0),
+                    h=float(gj.findtext('H') or 0),
+                    i=float(gj.findtext('I') or 0),
+                    j=float(gj.findtext('J') or 0),
+                    cpcor=float(gj.findtext('CPcor') or -9.57e-8),
+                    ctcor=float(gj.findtext('CTcor') or 3.25e-6),
+                    wbotc=float(gj.findtext('WBOTC') or 0),
+                )
+
+        pres_el = sensor.find('PressureSensor')
+        if pres_el is not None:
+            pres_coefs = cc.PressureCoefficients(
+                pa0=float(pres_el.findtext('PA0')),
+                pa1=float(pres_el.findtext('PA1')),
+                pa2=float(pres_el.findtext('PA2')),
+                ptca0=float(pres_el.findtext('PTCA0')),
+                ptca1=float(pres_el.findtext('PTCA1')),
+                ptca2=float(pres_el.findtext('PTCA2')),
+                ptcb0=float(pres_el.findtext('PTCB0')),
+                ptcb1=float(pres_el.findtext('PTCB1')),
+                ptcb2=float(pres_el.findtext('PTCB2')),
+                ptempa0=float(pres_el.findtext('PTEMPA0')),
+                ptempa1=float(pres_el.findtext('PTEMPA1')),
+                ptempa2=float(pres_el.findtext('PTEMPA2')),
+            )
+
+    return {'temperature': temp_coefs, 'conductivity': cond_coefs, 'pressure': pres_coefs}
+
+
+def _parse_sbe_hdr_time(hdr_file):
+    """Parse the start time from an SBE .hdr file ('System UTC' line)."""
+    with open(hdr_file) as f:
+        for line in f:
+            if 'System UTC' in line:
+                # e.g. "* System UTC = Jun 17 2026 17:13:47"
+                m = re.search(r'=\s*(.+)$', line.strip())
+                if m:
+                    try:
+                        return pd.to_datetime(m.group(1).strip())
+                    except Exception:
+                        pass
+    return None
+
+
+def sbe_hex_cast(hex_file):
+    """
+    Load a SeaBird SBE 19plus V2 raw HEX file and return the downcast as a CastFrame.
+
+    Uses the seabirdscientific package to decode raw hex data into physical
+    values (temperature, conductivity, pressure) using calibration coefficients
+    from the sibling XMLCON file.  The downcast is extracted using the same
+    monotonic-pressure heuristic as sbe_cast().
+
+    Requires a sibling XMLCON file with the same stem (case-insensitive) in the
+    same folder.  If the hex file contains fewer than 22 characters per data line
+    (e.g. temperature and conductivity channels were suppressed during data upload),
+    a ValueError is raised with instructions to export a CNV file using Sea-Bird's
+    SBEDataProcessing software.
+
+    Args:
+        hex_file: Path to a SBE 19plus V2 .hex raw data file.
+
+    Returns: CastFrame with cast_meta = {station, instrument_type='sbe', time}
+
+    Raises:
+        FileNotFoundError: if no matching XMLCON is found next to the hex file.
+        ValueError: if the hex file lacks temperature/conductivity channels.
+    """
+    try:
+        from seabirdscientific import instrument_data as sbs_id, conversion as sbs_conv
+    except ImportError as exc:
+        raise ImportError(
+            "seabirdscientific is required to read .hex files. "
+            "Install it with: pip install seabirdscientific"
+        ) from exc
+
+    import gsw
+
+    hex_path = Path(hex_file)
+
+    # --- Find sibling XMLCON (case-insensitive stem match) ---
+    parent = hex_path.parent
+    xmlcon = next(
+        (f for f in parent.iterdir()
+         if f.suffix.upper() == '.XMLCON' and f.stem.lower() == hex_path.stem.lower()),
+        None,
+    )
+    if xmlcon is None:
+        raise FileNotFoundError(
+            f"No XMLCON found for {hex_path.name} in {parent}. "
+            "Expected a file named like 'Station G1.XMLCON'."
+        )
+
+    # --- Check hex line length before attempting full parse ---
+    with open(hex_path) as fh:
+        first_data_line = next(
+            (line.strip() for line in fh if not line.startswith('*') and line.strip()), ''
+        )
+    if len(first_data_line) < 22:
+        raise ValueError(
+            f"{hex_path.name}: hex data lines are only {len(first_data_line)} characters long "
+            f"(expected ≥22 for a complete T/C/P record). "
+            "Temperature and conductivity channels appear to be suppressed. "
+            "Export a CNV file using Sea-Bird's SBEDataProcessing 'Data Conversion' "
+            "module, then re-run — sbe_cast() will pick it up automatically."
+        )
+
+    # --- Parse calibration coefficients from XMLCON ---
+    coefs = _parse_xmlcon(xmlcon)
+    if coefs['temperature'] is None or coefs['conductivity'] is None or coefs['pressure'] is None:
+        raise ValueError(f"Could not parse T/C/P coefficients from {xmlcon}")
+
+    # --- Read raw hex data ---
+    sensors = [
+        sbs_id.Sensors.Temperature,
+        sbs_id.Sensors.Conductivity,
+        sbs_id.Sensors.Pressure,
+    ]
+    raw_df = sbs_id.read_hex_file(
+        hex_path,
+        sbs_id.InstrumentType.SBE19Plus,
+        enabled_sensors=sensors,
+    )
+
+    # --- Convert raw counts to engineering units ---
+    temp_col  = sbs_id.HexDataTypes.temperature.value
+    cond_col  = sbs_id.HexDataTypes.conductivity.value
+    pres_col  = sbs_id.HexDataTypes.pressure.value
+    tcomp_col = sbs_id.HexDataTypes.temperatureCompensation.value
+
+    temp_C = sbs_conv.convert_temperature(
+        raw_df[temp_col].values, coefs['temperature']
+    )
+    pressure_dbar = sbs_conv.convert_pressure(
+        raw_df[pres_col].values,
+        raw_df[tcomp_col].values,
+        coefs['pressure'],
+        units='dbar',
+    )
+    cond_Sm = sbs_conv.convert_conductivity(
+        raw_df[cond_col].values,
+        temp_C,
+        pressure_dbar,
+        coefs['conductivity'],
+    )
+
+    # Salinity from conductivity (S/m → mS/cm × 10), temperature, pressure
+    cond_mScm = cond_Sm * 10.0
+    sal = gsw.SP_from_C(cond_mScm, temp_C, pressure_dbar)
+    depth_m = gsw.z_from_p(pressure_dbar, lat=48.5) * -1  # approx Padilla Bay lat
+
+    # --- Build DataFrame ---
+    df = pd.DataFrame({
+        'tv290C': temp_C,
+        'sal00':  sal,
+        'depSM':  depth_m,
+    }, index=pd.Index(pressure_dbar, name='Pressure'))
+
+    # --- Extract downcast (rows from first positive pressure to max pressure) ---
+    max_idx = int(np.argmax(pressure_dbar))
+    # Skip leading near-zero pressure rows (instrument in air)
+    positive_start = next((i for i, p in enumerate(pressure_dbar) if p > 0.1), 0)
+    df = df.iloc[positive_start:max_idx + 1]
+
+    if df.empty:
+        raise RuntimeError(f"No valid downcast found in {hex_path.name}")
+
+    # --- Metadata ---
+    station = station_from_path(hex_file)
+    hdr_file = hex_path.with_suffix('.hdr')
+    start_time = _parse_sbe_hdr_time(hdr_file) if hdr_file.exists() else None
+
+    cast = CastFrame(df)
+    cast.cast_meta = {
+        'station': station,
+        'instrument_type': 'sbe',
+        'time': start_time,
+    }
+    return cast
 
 
 def rbr_cast(excel_file, recasts: dict[str, int] | None = None):
@@ -275,8 +492,60 @@ def castaway_cast(csv_file):
     return cast
 
 
+def _castaway_raw_station(base_station, cast_date, cast_time, ds):
+    """
+    Return the raw station name including any repeat suffix (e.g. 'G1b') by
+    matching the CastAway cast time to the closest RBR or SBE cast time stored
+    in an xarray Dataset produced by create_ctd_dataset().
+
+    The Dataset stores repeat casts under station=base_station with repeat=1,2,…
+    This function finds the repeat whose reference-instrument cast time is closest
+    to cast_time and converts that to a station suffix (repeat 1 → 'b', 2 → 'c',
+    …).  Falls back to base_station (repeat=0) if no match is found.
+    """
+    if cast_time is None:
+        return base_station
+
+    stations_ds = ds.coords['station'].values if 'station' in ds.coords else []
+    if base_station not in stations_ds:
+        return base_station
+
+    dates_ds = ds.coords['date'].values if 'date' in ds.coords else []
+    date_matches = [d for d in dates_ds if pd.Timestamp(d).date() == cast_date]
+    if not date_matches:
+        return base_station
+
+    date_val       = date_matches[0]
+    cast_time_ts   = pd.Timestamp(cast_time)
+    instruments_ds = ds.coords['instrument'].values if 'instrument' in ds.coords else []
+    repeats_ds     = ds.coords['repeat'].values     if 'repeat'     in ds.coords else []
+
+    best_repeat = 0
+    best_diff   = float('inf')
+
+    for repeat_val in repeats_ds:
+        for inst in [i for i in ['rbr', 'sbe'] if i in instruments_ds]:
+            try:
+                t = ds['cast_time'].sel(
+                    station=base_station, date=date_val,
+                    repeat=repeat_val, instrument=inst,
+                ).values
+            except Exception:
+                continue
+            if pd.isnull(t):
+                continue
+            diff = abs((pd.Timestamp(t) - cast_time_ts).total_seconds())
+            if diff < best_diff:
+                best_diff   = diff
+                best_repeat = int(repeat_val)
+
+    if best_repeat == 0:
+        return base_station
+    return base_station + chr(ord('a') + best_repeat - 1)
+
+
 def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
-                       bl_doc_path=None):
+                       bl_doc_path=None, ctd_nc_file=None):
     """
     Combine CastAway profiles with DOC bottle data into a single DataFrame.
 
@@ -289,12 +558,33 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
     and the shallower cast supplies CTD values for any remaining intermediate
     DOC bottles (e.g. bottle 2).
 
-    When ``bl_doc_path`` is supplied the function also loads the pre-processed
-    BL+DOC CSV files produced by ``process_bl_doc_files()`` (columns:
-    bottle_number, time_local, sal00, tv290C, depSM, doc_conc, station).
-    These SBE-derived rows are combined with the CastAway rows; where both
-    sources cover the same (date, station, bottle_number) the BL/SBE row is
-    kept because it has a more precise depth from the bottle-firing scan match.
+    Data source priority (highest → lowest):
+
+    **Tier 1 — SBE CNV + BL bottle-firing files** (``bl_doc_path``):
+      Exact bottle-firing depth from the SBE scan-match, with SBE sal/temp.
+      When available this always wins for that (date, station, bottle_number).
+
+    **Tier 2 — CastAway depth + RBR sal/temp** (``ctd_nc_file``):
+      The CastAway rode with the Van Dorn bottles and provides the deployment
+      depth.  Salinity and temperature come from the RBR profile (shallowest
+      row for bottle 1; nearest-neighbour or deepest row for bottle 5) which
+      is more precisely calibrated.  Intermediate bottles keep CastAway
+      sal/temp because no clean non-interpolated RBR value exists for a
+      mid-column depth.  ``ctd_source = 'castaway'``.
+
+    **Tier 3 — RBR surface/bottom only** (``ctd_nc_file``, no CastAway):
+      When no CastAway exists for a (date, station), bottles 1 and 5 are
+      filled with the shallowest/deepest valid RBR measurement (depth + sal +
+      temp).  Intermediate bottles remain blank.  ``ctd_source = 'rbr'``.
+
+    A ``ctd_source`` column is added to every row:
+      - ``'bl_file'``  — Tier 1: SBE bottle-firing file (depth + sal + temp)
+      - ``'castaway'`` — Tier 2: depth from CastAway, sal/temp from RBR (or
+                         CastAway-only when no RBR is available)
+      - ``'rbr'``      — Tier 3: all values from RBR surface/bottom; no CastAway
+      - ``'no_depth'`` — no source available for this bottle
+
+    A summary of ``'no_depth'`` rows is printed after processing.
 
     Args:
         castaway_folder: Path to the root CastAway folder.  The function looks
@@ -306,13 +596,24 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
                          None (default) invalid casts are silently skipped.
         bl_doc_path:     Optional path to folder of pre-processed BL+DOC CSVs
                          (output of ``process_bl_doc_files()``).  When provided,
-                         SBE bottle data is merged in alongside CastAway data.
+                         Tier 1 SBE bottle data is merged and takes priority.
+        ctd_nc_file:     Optional path to the NetCDF produced by
+                         ``create_ctd_dataset()``.  Enables Tier 2 (CastAway
+                         depth + RBR sal/temp) and Tier 3 (RBR surface/bottom
+                         for dates with no CastAway).
 
     Returns: DataFrame with columns:
         doc_conc, date, bottle_number, station, salinity, depth, temperature,
-        local_time
+        local_time, ctd_source
     """
     castaway_folder = Path(castaway_folder)
+
+    # Load xarray dataset once up-front (used for both station matching and
+    # RBR sal/temp lookup later).
+    ds_ctd = None
+    if ctd_nc_file is not None:
+        import xarray as xr
+        ds_ctd = xr.open_dataset(ctd_nc_file)
 
     csv_files = sorted(castaway_folder.glob('Viola_*/*.csv'))
     if not csv_files:
@@ -336,8 +637,14 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
 
         local_time = pd.to_datetime(header.get('Cast time (local)'))
         lat, lon = float(lat_str), float(lon_str)
-        station = _nearest_station(lat, lon)
-        cast_date = local_time.date()
+        base_station = _nearest_station(lat, lon)
+        cast_date    = local_time.date()
+
+        # Refine to the correct repeat (e.g. 'G1b') via timestamp matching.
+        if ds_ctd is not None:
+            station = _castaway_raw_station(base_station, cast_date, local_time, ds_ctd)
+        else:
+            station = base_station
 
         df = pd.read_csv(str(fpath), comment='%')
         df = df.rename(columns={
@@ -381,22 +688,88 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
         cast_summary.duplicated(subset=['date', 'station'], keep='first')
     ].copy()
 
+    # ---------------------------------------------------------------------- #
+    # Optional: build RBR profile lookup from the CTD NetCDF.               #
+    # Key: (date.date(), station str) → dict with full valid depth/sal/temp  #
+    # arrays plus convenience surface values.  Uses the first repeat with    #
+    # valid data.                                                             #
+    # ---------------------------------------------------------------------- #
+    rbr_lookup: dict = {}
+    if ds_ctd is not None:
+        instruments = ds_ctd.coords['instrument'].values if 'instrument' in ds_ctd.coords else []
+        stations_ds = ds_ctd.coords['station'].values    if 'station'    in ds_ctd.coords else []
+        dates_ds    = ds_ctd.coords['date'].values       if 'date'       in ds_ctd.coords else []
+        repeats_ds  = ds_ctd.coords['repeat'].values     if 'repeat'     in ds_ctd.coords else []
+        depth_grid  = ds_ctd.coords['depth'].values      if 'depth'      in ds_ctd.coords else np.array([])
+        if 'rbr' in instruments:
+            for station_val in stations_ds:
+                for date_val in dates_ds:
+                    date_key = pd.Timestamp(date_val).date()
+                    for repeat_val in sorted(repeats_ds):
+                        prof  = ds_ctd.sel(
+                            station=station_val, date=date_val,
+                            repeat=repeat_val, instrument='rbr',
+                        )
+                        n = len(depth_grid)
+                        sal  = prof['sal00'].values  if 'sal00'  in ds_ctd else np.full(n, np.nan)
+                        temp = prof['tv290C'].values if 'tv290C' in ds_ctd else np.full(n, np.nan)
+                        valid = ~(np.isnan(sal) | np.isnan(temp))
+                        if valid.sum() < 1:
+                            continue
+                        rbr_lookup[(date_key, str(station_val))] = {
+                            'depths':       depth_grid[valid],
+                            'sal':          sal[valid],
+                            'temp':         temp[valid],
+                            'surface_sal':  float(sal[valid][0]),
+                            'surface_temp': float(temp[valid][0]),
+                        }
+                        break  # first repeat with data is enough
+        ds_ctd.close()
+
     # Build CTD lookup keyed by (date, station, bottle_number)
     bottle1 = primary[['date', 'station', 'surface_sal', 'surface_depth',
                         'surface_temp', 'local_time']].rename(
         columns={'surface_sal': 'salinity', 'surface_depth': 'depth',
                  'surface_temp': 'temperature'}
-    ).assign(bottle_number=1)
+    ).assign(bottle_number=1, ctd_source='castaway')
 
     bottle5 = primary[['date', 'station', 'bottom_sal', 'bottom_depth',
                         'bottom_temp', 'local_time']].rename(
         columns={'bottom_sal': 'salinity', 'bottom_depth': 'depth',
                  'bottom_temp': 'temperature'}
-    ).assign(bottle_number=5)
+    ).assign(bottle_number=5, ctd_source='castaway')
 
     ctd_lookup = pd.concat([bottle1, bottle5], ignore_index=True)
 
-    # Secondary casts fill intermediate DOC bottles (typically bottle 2)
+    # Tier 2: override sal/temp with RBR values (depth stays from CastAway).
+    # ctd_source remains 'castaway' — the depth still came from the CastAway.
+    # Bottle 1: RBR shallowest valid measurement.
+    # Bottle 5: if CastAway depth < RBR max depth, nearest-neighbour RBR value
+    #           to the CastAway depth; otherwise RBR deepest measurement.
+    if rbr_lookup:
+        for idx, row in ctd_lookup.iterrows():
+            key = (row['date'], str(row['station']))
+            if key not in rbr_lookup:
+                continue
+            rbr = rbr_lookup[key]
+            if row['bottle_number'] == 1:
+                ctd_lookup.at[idx, 'salinity']    = rbr['surface_sal']
+                ctd_lookup.at[idx, 'temperature'] = rbr['surface_temp']
+            elif row['bottle_number'] == 5:
+                castaway_depth = row['depth']
+                rbr_max_depth  = float(rbr['depths'][-1])
+                if castaway_depth < rbr_max_depth:
+                    nearest = int(np.argmin(np.abs(rbr['depths'] - castaway_depth)))
+                    ctd_lookup.at[idx, 'salinity']    = float(rbr['sal'][nearest])
+                    ctd_lookup.at[idx, 'temperature'] = float(rbr['temp'][nearest])
+                else:
+                    ctd_lookup.at[idx, 'salinity']    = float(rbr['sal'][-1])
+                    ctd_lookup.at[idx, 'temperature'] = float(rbr['temp'][-1])
+            # ctd_source stays 'castaway' — depth is always from the CastAway
+
+    # Secondary casts fill intermediate DOC bottles (typically bottle 2).
+    # Sal/temp stay as CastAway; no clean non-interpolated RBR value exists for
+    # mid-column depths.
     if not secondary.empty:
         extra_rows = []
         for _, sec in secondary.iterrows():
@@ -407,12 +780,14 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
             )
             for bn in doc_df.loc[mask, 'bottle_number'].values:
                 extra_rows.append({
-                    'date': sec['date'], 'station': sec['station'],
+                    'date':        sec['date'],
+                    'station':     sec['station'],
                     'bottle_number': bn,
                     'salinity':    sec['bottom_sal'],
                     'depth':       sec['bottom_depth'],
                     'temperature': sec['bottom_temp'],
                     'local_time':  sec['local_time'],
+                    'ctd_source':  'castaway',
                 })
         if extra_rows:
             ctd_lookup = pd.concat(
@@ -421,7 +796,43 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
 
     castaway_result = doc_df.merge(ctd_lookup, on=['date', 'station', 'bottle_number'], how='left')
 
-    # If no BL/SBE data requested, return CastAway result as-is
+    # Flag DOC rows with no CastAway cast (depth is NaN after the left-join)
+    castaway_result['ctd_source'] = castaway_result['ctd_source'].fillna('no_depth')
+
+    # Tier 3: no CastAway for this (station, date) — fill bottles 1 and 5
+    # from the RBR shallowest/deepest measurements (depth + sal + temp).
+    # Intermediate bottles have no clean non-interpolated value, so they
+    # remain no_depth.
+    if rbr_lookup:
+        for idx, row in castaway_result[castaway_result['ctd_source'] == 'no_depth'].iterrows():
+            m = re.fullmatch(r'([A-Z0-9]+)([a-z]?)', str(row['station']))
+            base = m.group(1) if m else str(row['station'])
+            key  = (row['date'], base)
+            if key not in rbr_lookup:
+                continue
+            rbr = rbr_lookup[key]
+            if row['bottle_number'] == 1:
+                castaway_result.at[idx, 'depth']       = float(rbr['depths'][0])
+                castaway_result.at[idx, 'salinity']    = float(rbr['surface_sal'])
+                castaway_result.at[idx, 'temperature'] = float(rbr['surface_temp'])
+                castaway_result.at[idx, 'ctd_source']  = 'rbr'
+            elif row['bottle_number'] == 5:
+                castaway_result.at[idx, 'depth']       = float(rbr['depths'][-1])
+                castaway_result.at[idx, 'salinity']    = float(rbr['sal'][-1])
+                castaway_result.at[idx, 'temperature'] = float(rbr['temp'][-1])
+                castaway_result.at[idx, 'ctd_source']  = 'rbr'
+
+    # Report remaining no_depth rows (intermediate bottles, or dates with no RBR)
+    no_depth = castaway_result[castaway_result['ctd_source'] == 'no_depth']
+    if not no_depth.empty:
+        print(f"\n{'='*55}")
+        print(f"  {len(no_depth)} DOC sample(s) still have no depth:")
+        print(f"{'='*55}")
+        for _, r in no_depth.iterrows():
+            print(f"  {r['date']}  {r['station']}  bottle {int(r['bottle_number'])}")
+        print(f"{'='*55}\n")
+
+    # If no BL/SBE data requested, return result now
     if bl_doc_path is None:
         return castaway_result
 
@@ -439,7 +850,9 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
         })
         keep = ['bottle_number', 'local_time', 'date', 'station',
                 'salinity', 'depth', 'temperature', 'doc_conc']
-        bl_parts.append(df[[c for c in keep if c in df.columns]])
+        df = df[[c for c in keep if c in df.columns]]
+        df['ctd_source'] = 'bl_file'
+        bl_parts.append(df)
 
     if not bl_parts:
         return castaway_result
@@ -447,11 +860,11 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
     bl_df_all = pd.concat(bl_parts, ignore_index=True)
     bl_df_all['date'] = pd.to_datetime(bl_df_all['date']).dt.date
 
-    # Merge: stack CastAway and BL rows, then keep BL row when both cover the
-    # same (date, station, bottle_number) — BL depths are more precise.
+    # Merge: stack CastAway/RBR and BL rows, then keep BL row when both cover
+    # the same (date, station, bottle_number) — BL depths are most precise.
     combined = pd.concat([castaway_result, bl_df_all], ignore_index=True)
-    # Sort so NaN-salinity rows (CastAway placeholders) come BEFORE real values;
-    # drop_duplicates keep='last' then retains the row with actual data.
+    # Sort so NaN-salinity rows come BEFORE real values so drop_duplicates
+    # keep='last' retains the row with actual data.
     combined = combined.sort_values(
         ['date', 'station', 'bottle_number', 'salinity'],
         na_position='first',
