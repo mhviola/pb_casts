@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from . import config
-from .io import sbe_cast, rbr_cast, load_bottle_file
+from .io import sbe_cast, rbr_cast, load_bottle_file, station_from_path
 from .processing import process_ctd
 from .utils import parse_folder_date
 
@@ -442,7 +442,8 @@ def process_bl_doc_files(data_path=None, output_path=None, doc_file=None):
     
     for bl_file in bl_files:
         try:
-            cnv_file = bl_file.with_name(bl_file.stem + "NTS.cnv")
+            cnv_file = bl_file.with_name(bl_file.stem + ".cnv")
+            print(cnv_file)
             if not cnv_file.exists():
                 print(f"Warning: No CNV file for {bl_file.name}")
                 continue
@@ -453,7 +454,7 @@ def process_bl_doc_files(data_path=None, output_path=None, doc_file=None):
                 continue
             
             bl_doc = load_bottle_file(bl_file, doc_file)
-            bl_doc['station'] = bl_file.stem
+            bl_doc['station'] = station_from_path(str(bl_file)) or bl_file.stem
             bl_doc.to_csv(output_file, index=False)
             print(f"Saved: {output_file}")
             
@@ -503,9 +504,11 @@ def batch_process_all(data_path=None, output_path=None, overwrite=False, surface
     for folder in dated_folders:
         date = parse_folder_date(folder.name)
 
-        # SBE: *NTS.cnv files (skip anything marked "DO NOT USE" or "redone")
+        # SBE: any *.cnv in the folder or its subdirectories (e.g. "Station B.cnv"
+        # from raw Seasave output or legacy "*NTS.cnv" files).
+        # Files marked "DO NOT USE" or "redone" are excluded.
         cnv_files = sorted([
-            f for f in folder.glob('*NTS.cnv')
+            f for f in folder.rglob('*.cnv')
             if 'do not use' not in f.name.lower() and 'redone' not in f.stem.lower()
         ])
         # RBR: .xlsx files
@@ -520,7 +523,11 @@ def batch_process_all(data_path=None, output_path=None, overwrite=False, surface
 
         # --- SBE processing ---
         for cnv_file in cnv_files:
-            station = cnv_file.stem.replace('NTS', '')
+            station = station_from_path(str(cnv_file))
+            if station is None:
+                print(f"[{folder.name}] Skipping {cnv_file.name} — could not identify station.")
+                total_skipped += 1
+                continue
             out_file = out_dir / f"{station}.parquet"
 
             if out_file.exists() and not overwrite:

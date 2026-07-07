@@ -32,6 +32,12 @@ RBR_PARAMS = {
     'rbr_despike_block':        100,
     'rbr_smooth_window_pts':    5,
 }
+
+CASTAWAY_PARAMS = {
+    'castaway_sample_rate_hz':    5.0,
+    'castaway_despike_block':     75,
+    'castaway_smooth_window_pts': 11,
+}
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -186,8 +192,15 @@ def process_ctd(df, smooth=True, columns=None, surface_cutoff_m=None):
         sample_rate   = SBE_PARAMS['sbe_sample_rate_hz']
         despike_block = SBE_PARAMS['sbe_despike_block']
         smooth_window = SBE_PARAMS['sbe_smooth_window_pts']
+    elif instrument_type.lower() == 'castaway':
+        sample_rate   = CASTAWAY_PARAMS['castaway_sample_rate_hz']
+        despike_block = CASTAWAY_PARAMS['castaway_despike_block']
+        smooth_window = CASTAWAY_PARAMS['castaway_smooth_window_pts']
     else:
-        raise ValueError(f"Invalid instrument type: {instrument_type}")
+        raise ValueError(
+            f"Invalid instrument type: '{instrument_type}'. "
+            "Expected 'sbe', 'rbr', or 'castaway'."
+        )
 
     bin_delta = COMMON_PARAMS['depth_bin_size_m']
     if surface_cutoff_m is not None:

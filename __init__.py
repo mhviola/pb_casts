@@ -1,8 +1,9 @@
 """
 Padilla Bay CTD Processing Package
 
-A Python package for processing SeaBird (CNV) and RBR (Excel) CTD data from
-Padilla Bay field campaigns, including bottle files and DOC measurements.
+A Python package for processing SeaBird (CNV), RBR (Excel), and CastAway (CSV)
+CTD data from Padilla Bay field campaigns, including bottle files and DOC
+measurements.
 
 Typical workflow
 ----------------
@@ -39,7 +40,8 @@ __version__ = '0.1.0'
 __author__ = 'Marisa Viola'
 
 # Import key functions for convenient access
-from .io import sbe_cast, rbr_cast, get_cast, load_bottle_file, station_from_path
+from .io import (sbe_cast, rbr_cast, get_cast, load_bottle_file, station_from_path,
+                 castaway_cast, build_castaway_doc)
 from .processing import process_ctd, remove_surface_noise
 from .plotting import plot_ts, from_file_to_plot, plot_bl_files
 from .storage import make_parquet
@@ -55,6 +57,8 @@ __all__ = [
     'get_cast',
     'load_bottle_file',
     'station_from_path',
+    'castaway_cast',
+    'build_castaway_doc',
     # Processing functions
     'process_ctd',
     'remove_surface_noise',
