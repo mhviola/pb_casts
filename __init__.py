@@ -40,7 +40,7 @@ __version__ = '0.1.0'
 __author__ = 'Marisa Viola'
 
 # Import key functions for convenient access
-from .io import (sbe_cast, rbr_cast, sbe_hex_cast, get_cast, load_bottle_file,
+from .io import (sbe_cast, rbr_cast, get_cast, load_bottle_file,
                  station_from_path, castaway_cast, build_castaway_doc)
 from .processing import process_ctd, remove_surface_noise
 from .plotting import plot_ts, from_file_to_plot, plot_bl_files
@@ -54,7 +54,6 @@ __all__ = [
     # IO functions
     'sbe_cast',
     'rbr_cast',
-    'sbe_hex_cast',
     'get_cast',
     'load_bottle_file',
     'station_from_path',

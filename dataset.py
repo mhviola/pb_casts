@@ -142,39 +142,21 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None):
     cast_times: dict[tuple[str, pd.Timestamp, int, str], pd.Timestamp] = {}
 
     # ------------------------------------------------------------------ #
-    # 1.  SBE CNV + RBR XLSX + SBE HEX — standard dated Data/ subfolders #
+    # 1.  SBE CNV + RBR XLSX — standard dated Data/ subfolders           #
     # ------------------------------------------------------------------ #
     files = (
         glob.glob(str(data_path / '**' / '*.cnv'), recursive=True) +
-        glob.glob(str(data_path / '**' / '*.xlsx'), recursive=True) +
-        glob.glob(str(data_path / '**' / '*.hex'), recursive=True)
+        glob.glob(str(data_path / '**' / '*.xlsx'), recursive=True)
     )
 
     for fpath in files:
-        folder_name = Path(fpath).parent.name
-        # hex files may live in a subdirectory; walk up to find the dated folder
-        p = Path(fpath).parent
-        folder_date_name = None
-        for _ in range(3):
-            if re.fullmatch(r'\d{4}[A-Z][a-z]{2}\d{2}', p.name):
-                folder_date_name = p.name
-                break
-            p = p.parent
-
-        date = parse_folder_date(folder_date_name) if folder_date_name else None
+        folder_date_name = Path(fpath).parent.name
+        date = parse_folder_date(folder_date_name)
         if date is None:
             continue
 
-        # Skip hex files that are clearly un-exportable (handle in try/except below)
         try:
             casts = get_cast(fpath)
-        except ValueError as e:
-            # sbe_hex_cast raises ValueError for incomplete hex files — skip silently
-            if fpath.lower().endswith('.hex'):
-                print(f"[{folder_date_name}] Skipping {Path(fpath).name}: {e}")
-                continue
-            print(f"Warning: Could not parse date from {fpath}, skipping")
-            continue
         except Exception as e:
             print(f"Error loading {fpath}: {e}")
             continue

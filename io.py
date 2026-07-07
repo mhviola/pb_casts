@@ -12,13 +12,13 @@ from . import config
 
 def get_cast(file):
     """
-    Load cast(s) from a CNV (SeaBird), XLSX (RBR), CSV (CastAway), or HEX (SeaBird raw) file.
+    Load cast(s) from a CNV (SeaBird), XLSX (RBR), or CSV (CastAway) file.
 
     Always returns a list of CastFrames so callers can iterate uniformly
     regardless of instrument type.
 
     Args:
-        file: Path to CNV, XLSX, CSV, or HEX file
+        file: Path to CNV, XLSX, or CSV file
 
     Returns: List of CastFrame objects with cast_meta populated
     """
@@ -30,8 +30,6 @@ def get_cast(file):
         return rbr_cast(file)
     elif file.endswith('.csv'):
         return [castaway_cast(file)]
-    elif file.lower().endswith('.hex'):
-        return [sbe_hex_cast(file)]
     else:
         raise ValueError(f"Unsupported file type: {file}")
 
@@ -96,222 +94,6 @@ def sbe_cast(cnv_file):
         raise RuntimeError("Cast split failed - check data quality")
 
     return down_cast
-
-
-def _parse_xmlcon(xmlcon_file):
-    """
-    Parse an SBE XMLCON calibration file and return coefficient objects
-    for temperature, conductivity, and pressure sensors.
-
-    Returns: dict with keys 'temperature', 'conductivity', 'pressure'
-             each holding the matching seabirdscientific cal_coefficients dataclass,
-             or None if the sensor was not found.
-    """
-    import xml.etree.ElementTree as ET
-    from seabirdscientific import cal_coefficients as cc
-
-    tree = ET.parse(xmlcon_file)
-    root = tree.getroot()
-
-    temp_coefs = cond_coefs = pres_coefs = None
-
-    for sensor in root.iter('Sensor'):
-        temp_el = sensor.find('TemperatureSensor')
-        if temp_el is not None:
-            temp_coefs = cc.TemperatureCoefficients(
-                a0=float(temp_el.findtext('A0')),
-                a1=float(temp_el.findtext('A1')),
-                a2=float(temp_el.findtext('A2')),
-                a3=float(temp_el.findtext('A3')),
-            )
-
-        cond_el = sensor.find('ConductivitySensor')
-        if cond_el is not None:
-            # Use G/J equation (equation="1") if present, else equation="0"
-            gj = cond_el.find('Coefficients[@equation="1"]')
-            if gj is None:
-                gj = cond_el.find('Coefficients')
-            if gj is not None:
-                cond_coefs = cc.ConductivityCoefficients(
-                    g=float(gj.findtext('G') or 0),
-                    h=float(gj.findtext('H') or 0),
-                    i=float(gj.findtext('I') or 0),
-                    j=float(gj.findtext('J') or 0),
-                    cpcor=float(gj.findtext('CPcor') or -9.57e-8),
-                    ctcor=float(gj.findtext('CTcor') or 3.25e-6),
-                    wbotc=float(gj.findtext('WBOTC') or 0),
-                )
-
-        pres_el = sensor.find('PressureSensor')
-        if pres_el is not None:
-            pres_coefs = cc.PressureCoefficients(
-                pa0=float(pres_el.findtext('PA0')),
-                pa1=float(pres_el.findtext('PA1')),
-                pa2=float(pres_el.findtext('PA2')),
-                ptca0=float(pres_el.findtext('PTCA0')),
-                ptca1=float(pres_el.findtext('PTCA1')),
-                ptca2=float(pres_el.findtext('PTCA2')),
-                ptcb0=float(pres_el.findtext('PTCB0')),
-                ptcb1=float(pres_el.findtext('PTCB1')),
-                ptcb2=float(pres_el.findtext('PTCB2')),
-                ptempa0=float(pres_el.findtext('PTEMPA0')),
-                ptempa1=float(pres_el.findtext('PTEMPA1')),
-                ptempa2=float(pres_el.findtext('PTEMPA2')),
-            )
-
-    return {'temperature': temp_coefs, 'conductivity': cond_coefs, 'pressure': pres_coefs}
-
-
-def _parse_sbe_hdr_time(hdr_file):
-    """Parse the start time from an SBE .hdr file ('System UTC' line)."""
-    with open(hdr_file) as f:
-        for line in f:
-            if 'System UTC' in line:
-                # e.g. "* System UTC = Jun 17 2026 17:13:47"
-                m = re.search(r'=\s*(.+)$', line.strip())
-                if m:
-                    try:
-                        return pd.to_datetime(m.group(1).strip())
-                    except Exception:
-                        pass
-    return None
-
-
-def sbe_hex_cast(hex_file):
-    """
-    Load a SeaBird SBE 19plus V2 raw HEX file and return the downcast as a CastFrame.
-
-    Uses the seabirdscientific package to decode raw hex data into physical
-    values (temperature, conductivity, pressure) using calibration coefficients
-    from the sibling XMLCON file.  The downcast is extracted using the same
-    monotonic-pressure heuristic as sbe_cast().
-
-    Requires a sibling XMLCON file with the same stem (case-insensitive) in the
-    same folder.  If the hex file contains fewer than 22 characters per data line
-    (e.g. temperature and conductivity channels were suppressed during data upload),
-    a ValueError is raised with instructions to export a CNV file using Sea-Bird's
-    SBEDataProcessing software.
-
-    Args:
-        hex_file: Path to a SBE 19plus V2 .hex raw data file.
-
-    Returns: CastFrame with cast_meta = {station, instrument_type='sbe', time}
-
-    Raises:
-        FileNotFoundError: if no matching XMLCON is found next to the hex file.
-        ValueError: if the hex file lacks temperature/conductivity channels.
-    """
-    try:
-        from seabirdscientific import instrument_data as sbs_id, conversion as sbs_conv
-    except ImportError as exc:
-        raise ImportError(
-            "seabirdscientific is required to read .hex files. "
-            "Install it with: pip install seabirdscientific"
-        ) from exc
-
-    import gsw
-
-    hex_path = Path(hex_file)
-
-    # --- Find sibling XMLCON (case-insensitive stem match) ---
-    parent = hex_path.parent
-    xmlcon = next(
-        (f for f in parent.iterdir()
-         if f.suffix.upper() == '.XMLCON' and f.stem.lower() == hex_path.stem.lower()),
-        None,
-    )
-    if xmlcon is None:
-        raise FileNotFoundError(
-            f"No XMLCON found for {hex_path.name} in {parent}. "
-            "Expected a file named like 'Station G1.XMLCON'."
-        )
-
-    # --- Check hex line length before attempting full parse ---
-    with open(hex_path) as fh:
-        first_data_line = next(
-            (line.strip() for line in fh if not line.startswith('*') and line.strip()), ''
-        )
-    if len(first_data_line) < 22:
-        raise ValueError(
-            f"{hex_path.name}: hex data lines are only {len(first_data_line)} characters long "
-            f"(expected ≥22 for a complete T/C/P record). "
-            "Temperature and conductivity channels appear to be suppressed. "
-            "Export a CNV file using Sea-Bird's SBEDataProcessing 'Data Conversion' "
-            "module, then re-run — sbe_cast() will pick it up automatically."
-        )
-
-    # --- Parse calibration coefficients from XMLCON ---
-    coefs = _parse_xmlcon(xmlcon)
-    if coefs['temperature'] is None or coefs['conductivity'] is None or coefs['pressure'] is None:
-        raise ValueError(f"Could not parse T/C/P coefficients from {xmlcon}")
-
-    # --- Read raw hex data ---
-    sensors = [
-        sbs_id.Sensors.Temperature,
-        sbs_id.Sensors.Conductivity,
-        sbs_id.Sensors.Pressure,
-    ]
-    raw_df = sbs_id.read_hex_file(
-        hex_path,
-        sbs_id.InstrumentType.SBE19Plus,
-        enabled_sensors=sensors,
-    )
-
-    # --- Convert raw counts to engineering units ---
-    temp_col  = sbs_id.HexDataTypes.temperature.value
-    cond_col  = sbs_id.HexDataTypes.conductivity.value
-    pres_col  = sbs_id.HexDataTypes.pressure.value
-    tcomp_col = sbs_id.HexDataTypes.temperatureCompensation.value
-
-    temp_C = sbs_conv.convert_temperature(
-        raw_df[temp_col].values, coefs['temperature']
-    )
-    pressure_dbar = sbs_conv.convert_pressure(
-        raw_df[pres_col].values,
-        raw_df[tcomp_col].values,
-        coefs['pressure'],
-        units='dbar',
-    )
-    cond_Sm = sbs_conv.convert_conductivity(
-        raw_df[cond_col].values,
-        temp_C,
-        pressure_dbar,
-        coefs['conductivity'],
-    )
-
-    # Salinity from conductivity (S/m → mS/cm × 10), temperature, pressure
-    cond_mScm = cond_Sm * 10.0
-    sal = gsw.SP_from_C(cond_mScm, temp_C, pressure_dbar)
-    depth_m = gsw.z_from_p(pressure_dbar, lat=48.5) * -1  # approx Padilla Bay lat
-
-    # --- Build DataFrame ---
-    df = pd.DataFrame({
-        'tv290C': temp_C,
-        'sal00':  sal,
-        'depSM':  depth_m,
-    }, index=pd.Index(pressure_dbar, name='Pressure'))
-
-    # --- Extract downcast (rows from first positive pressure to max pressure) ---
-    max_idx = int(np.argmax(pressure_dbar))
-    # Skip leading near-zero pressure rows (instrument in air)
-    positive_start = next((i for i, p in enumerate(pressure_dbar) if p > 0.1), 0)
-    df = df.iloc[positive_start:max_idx + 1]
-
-    if df.empty:
-        raise RuntimeError(f"No valid downcast found in {hex_path.name}")
-
-    # --- Metadata ---
-    station = station_from_path(hex_file)
-    hdr_file = hex_path.with_suffix('.hdr')
-    start_time = _parse_sbe_hdr_time(hdr_file) if hdr_file.exists() else None
-
-    cast = CastFrame(df)
-    cast.cast_meta = {
-        'station': station,
-        'instrument_type': 'sbe',
-        'time': start_time,
-    }
-    return cast
 
 
 def rbr_cast(excel_file, recasts: dict[str, int] | None = None):

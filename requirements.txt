@@ -9,10 +9,6 @@ matplotlib>=3.4.0
 # OR: pip install git+https://github.com/pyoceans/python-ctd.git
 gsw>=3.4.0
 
-# Sea-Bird Scientific hex conversion (SBE 19plus V2 raw files)
-# pip install seabirdscientific
-seabirdscientific>=2.7.0
-
 # Data formats
 xarray>=0.19.0
 pyarrow>=5.0.0

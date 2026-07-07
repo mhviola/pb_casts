@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from . import config
-from .io import sbe_cast, rbr_cast, castaway_cast, sbe_hex_cast, load_bottle_file, station_from_path
+from .io import sbe_cast, rbr_cast, castaway_cast, load_bottle_file, station_from_path
 from .processing import process_ctd
 from .utils import parse_folder_date
 
@@ -663,17 +663,12 @@ def batch_process_all(data_path=None, output_path=None, castaway_path=None,
             f for f in folder.rglob('*.cnv')
             if 'do not use' not in f.name.lower() and 'redone' not in f.stem.lower()
         ])
-        # SBE raw: any *.hex in the folder or its subdirectories (paired XMLCON required)
-        hex_files = sorted([
-            f for f in folder.rglob('*.hex')
-            if 'do not use' not in f.name.lower()
-        ])
         # RBR: .xlsx files at the top level of the dated folder
         xlsx_files = sorted(folder.glob('*.xlsx'))
         # CastAway: CSVs from the matching Viola_* subfolder
         castaway_files = _find_castaway_files_for_date(date, castaway_path)
 
-        if not cnv_files and not xlsx_files and not hex_files and not castaway_files:
+        if not cnv_files and not xlsx_files and not castaway_files:
             print(f"[{folder.name}] No CTD files found, skipping.\n")
             continue
 
@@ -768,28 +763,6 @@ def batch_process_all(data_path=None, output_path=None, castaway_path=None,
                 continue
             _register_ref(cast_df)
             result = _save_cast(cast_df, 'sbe', cnv_file.name)
-            if result is True:
-                total_processed += 1
-            elif result is False:
-                total_errors += 1
-            else:
-                total_skipped += 1
-
-        # --- SBE HEX processing ---
-        for hex_file in hex_files:
-            try:
-                cast_df = sbe_hex_cast(str(hex_file))
-            except ValueError as e:
-                # Suppress the "channels suppressed" warning — common for un-exported files
-                print(f"[{folder.name}] Skipping {hex_file.name}: {e}")
-                total_skipped += 1
-                continue
-            except Exception as e:
-                print(f"[{folder.name}] ERROR loading {hex_file.name}: {e}")
-                total_errors += 1
-                continue
-            _register_ref(cast_df)
-            result = _save_cast(cast_df, 'sbe', hex_file.name)
             if result is True:
                 total_processed += 1
             elif result is False:
