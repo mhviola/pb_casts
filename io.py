@@ -710,11 +710,21 @@ def load_bottle_file(bl_file, doc_file=None):
         cnv_nts = bl_path.with_name(bl_path.stem + 'NTS.cnv')
         if cnv_nts.exists():
             cnv_file = cnv_nts
+        else:
+            print(f"Warning: No paired CNV found for {bl_path.name} "
+                  f"(tried {bl_path.stem}.cnv and {bl_path.stem}NTS.cnv) — "
+                  f"depth/sal/temp will be NaN")
     if cnv_file.exists():
         try:
             cnv_df = ctd.from_cnv(str(cnv_file))
             cast_start = cnv_df._metadata.get('time')
-            if cast_start is not None and 'timeS' in cnv_df.columns:
+            if cast_start is None:
+                print(f"Warning: No start time in {cnv_file.name} — "
+                      f"cannot match bottle scans, depth/sal/temp will be NaN")
+            elif 'timeS' not in cnv_df.columns:
+                print(f"Warning: No timeS column in {cnv_file.name} — "
+                      f"cannot match bottle scans, depth/sal/temp will be NaN")
+            else:
                 scan_times = (
                     pd.Timestamp(cast_start)
                     + pd.to_timedelta(cnv_df['timeS'].values, unit='s')
