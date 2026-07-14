@@ -16,13 +16,12 @@ from .batch import load_surface_cutoffs
 
 # CF-convention variable metadata: long_name, units, standard_name
 VAR_ATTRS: dict[str, dict] = {
-    'tv290C':   {'long_name': 'Temperature (ITS-90)',          'units': 'degC',   'standard_name': 'sea_water_temperature'},
-    'sal00':    {'long_name': 'Practical Salinity',            'units': 'PSU',    'standard_name': 'sea_water_practical_salinity'},
-    'prdM':     {'long_name': 'Pressure',                      'units': 'dbar',   'standard_name': 'sea_water_pressure'},
-    'Pressure': {'long_name': 'Pressure',                      'units': 'dbar',   'standard_name': 'sea_water_pressure'},
-    'depSM':    {'long_name': 'Depth',                         'units': 'm',      'standard_name': 'depth'},
-    'sigma0':   {'long_name': 'Potential Density Anomaly σ₀',  'units': 'kg m-3', 'standard_name': 'sea_water_sigma_theta'},
-    'rho0':     {'long_name': 'In Situ Density Anomaly',       'units': 'kg m-3', 'standard_name': 'sea_water_density'},
+    'temp':   {'long_name': 'Temperature (ITS-90)',          'units': 'degC',   'standard_name': 'seawater_temperature'},
+    'sal':    {'long_name': 'Practical Salinity',            'units': 'PSU',    'standard_name': 'seawater__salinity'},
+    'pressure': {'long_name': 'Pressure',                      'units': 'dbar',   'standard_name': 'seawater_pressure'},
+    'depth':    {'long_name': 'Depth',                         'units': 'm',      'standard_name': 'depth'},
+    'sigma0':   {'long_name': 'Potential Density Anomaly $\sigma_0$',  'units': 'kg m-3', 'standard_name': 'seawater_potential_density'},
+    'rho0':     {'long_name': 'In Situ Density Anomaly',       'units': 'kg m-3', 'standard_name': 'seawater_density'},
 }
 
 # Processing parameters — derived directly from processing.py constants
@@ -101,7 +100,40 @@ def _parse_station_repeat(raw_station: str) -> tuple[str, int]:
     return base, repeat
 
 
-def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None):
+def _collapse_instrument_dim(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Collapse the instrument dimension by retaining only primary instruments
+    (rbr and sbe) and reducing to one profile per (station, date, repeat).
+
+    Since rbr and sbe never occupy the same cast slot, the nanmean over the
+    instrument axis equals the single non-NaN instrument value.  cast_time is
+    handled separately (first non-NaT wins).
+    """
+    primary = [i for i in ds.instrument.values if i in ('rbr', 'sbe')]
+    if not primary:
+        primary = list(ds.instrument.values)
+
+    ds_p = ds.sel(instrument=primary)
+
+    # Drop cast_time before mean (datetime coords can't be averaged)
+    ds_out = ds_p.drop_vars('cast_time').mean(dim='instrument', skipna=True)
+
+    # cast_time: pick first non-NaT across the primary instruments
+    ct_vals = ds_p['cast_time'].values          # (station, date, repeat, n_inst)
+    ct_out  = ct_vals[..., 0].copy()
+    for i in range(1, len(primary)):
+        mask = np.isnat(ct_out)
+        ct_out[mask] = ct_vals[..., i][mask]
+
+    ds_out = ds_out.assign_coords(
+        cast_time=xr.DataArray(ct_out, dims=['station', 'date', 'repeat'])
+    )
+    ds_out.attrs.update(ds.attrs)
+    return ds_out
+
+
+def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None,
+                       instrument_dim=True):
     """
     Create xarray Dataset from all CTD files in DATA_PATH and CASTAWAY_PATH.
 
@@ -111,10 +143,13 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None):
       - *.hex   → SeaBird SBE raw hex (requires paired XMLCON; skipped if T/C absent)
       - CastAway CSVs from CASTAWAY_PATH/Viola_* subfolders
 
-    Returns: Dataset with dimensions (station, date, repeat, instrument, depth).
+    Returns: Dataset with dimensions (station, date, repeat, instrument, depth)
+    when instrument_dim=True (default), or (station, date, repeat, depth) when
+    instrument_dim=False.
+
       - instrument ∈ ['castaway', 'rbr', 'sbe'] — the source CTD for each profile
       - repeat=0  primary cast, repeat=1 first repeat ('b'), repeat=2 second ('c'), …
-      - cast_time coordinate holds the actual timestamp per (station, date, repeat, instrument)
+      - cast_time coordinate holds the actual timestamp per (station, date, repeat[, instrument])
       - Missing combinations and depths outside a cast's range are filled with NaN.
 
     Use ds.sel(instrument='rbr') vs ds.sel(instrument='castaway') to compare
@@ -128,6 +163,11 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None):
             stability algorithm for that cast.
         castaway_path: Path to CastAway_profiles folder
             (default: CASTAWAY_PATH from config).
+        instrument_dim: If True (default), keep the instrument dimension so
+            that rbr, sbe, and castaway profiles can be compared directly.
+            If False, collapse the instrument dimension by retaining only the
+            primary instruments (rbr and sbe) and returning a 4-D dataset
+            (station, date, repeat, depth).
     """
     data_path     = config.DATA_PATH
     castaway_path = Path(castaway_path) if castaway_path else config.CASTAWAY_PATH
@@ -318,6 +358,10 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None):
         coords=coords,
     )
 
+    # Rename raw SBE/RBR column names to the CF-convention names used in VAR_ATTRS
+    sbe_rename = {'tv290C': 'temp', 'sal00': 'sal'}
+    ds = ds.rename_vars({k: v for k, v in sbe_rename.items() if k in ds})
+
     # Variable-level metadata
     for var in ds.data_vars:
         if var in VAR_ATTRS:
@@ -331,5 +375,8 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None):
         'Use ds.sel(instrument="rbr") etc. for cross-instrument comparison.'
     )
     ds.attrs['created'] = pd.Timestamp.now().isoformat()
+
+    if not instrument_dim:
+        ds = _collapse_instrument_dim(ds)
 
     return ds

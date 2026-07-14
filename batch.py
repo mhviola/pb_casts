@@ -442,12 +442,24 @@ def process_bl_doc_files(data_path=None, output_path=None, doc_file=None):
     
     for bl_file in bl_files:
         try:
+            # CNV files may be named {stem}.cnv or {stem}NTS.cnv (SeaBird convention)
             cnv_file = bl_file.with_name(bl_file.stem + ".cnv")
             if not cnv_file.exists():
-                print(f"Warning: No CNV file for {bl_file.name}")
-                continue
-            
-            output_file = output_dir / f"{bl_file.parent.name}_{bl_file.stem}_DOC.csv"
+                cnv_nts = bl_file.with_name(bl_file.stem + "NTS.cnv")
+                if cnv_nts.exists():
+                    cnv_file = cnv_nts
+                else:
+                    print(f"Warning: No CNV file for {bl_file.name}")
+                    continue
+
+            # The first path component under data_path is always the date folder,
+            # regardless of whether the bl file is directly inside it or nested
+            # in a subfolder (e.g. "Summer 2026 CTD DATA/").
+            try:
+                folder_key = bl_file.relative_to(data_path).parts[0]
+            except ValueError:
+                folder_key = bl_file.parent.name
+            output_file = output_dir / f"{folder_key}_{bl_file.stem}_DOC.csv"
             if output_file.exists():
                 print(f"Skipping {bl_file.name} - exists")
                 continue
@@ -541,8 +553,8 @@ def plot_multi_instrument_pdf(nc_file, output_pdf=None):
     DEFAULT_MARKER = None
 
     panels = [
-        ('sal00',  'Salinity (PSU)'),
-        ('tv290C', 'Temperature (°C)'),
+        ('sal',    'Salinity (PSU)'),
+        ('temp',   'Temperature (°C)'),
         ('rho0',   'Density Anomaly (kg m⁻³)'),
     ]
 
@@ -904,8 +916,8 @@ def fill_manual_depths(csv_file, ctd_nc_file, output_file=None):
                                   repeat=rv, instrument=inst_try)
                 except Exception:
                     continue
-                sal  = prof['sal00'].values  if 'sal00'  in ds else np.full(len(depth_grid), np.nan)
-                temp = prof['tv290C'].values if 'tv290C' in ds else np.full(len(depth_grid), np.nan)
+                sal  = prof['sal'].values  if 'sal'  in ds else np.full(len(depth_grid), np.nan)
+                temp = prof['temp'].values if 'temp' in ds else np.full(len(depth_grid), np.nan)
                 valid = ~(np.isnan(sal) | np.isnan(temp))
                 if valid.sum() < 1:
                     continue

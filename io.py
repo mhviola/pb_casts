@@ -80,9 +80,12 @@ def sbe_cast(cnv_file):
     station = station_from_path(cnv_file)
     start_time = cast_df._metadata.get('time')
     meta = {'station': station, 'instrument_type': 'sbe', 'time': start_time}
-    # Drop unused sensor columns
-    drop_cols = ['CStarAt0', 'CStarTr0', 'par', 'wetStar', 'sbeox0PS', 'v4', 'flag', 'scan', 'c0S/m', 'potemp090C']
-    cast_df.drop(columns=[c for c in drop_cols if c in cast_df.columns], inplace=True)
+    # Keep only the core sensor columns; any new channels added by SBE firmware
+    # upgrades or different casts are silently discarded here.
+    # depSM is excluded because depth is already the dataset's index/coordinate
+    keep_cols = {'timeS', 'tv290C', 'sal00'}
+    drop_cols = [c for c in cast_df.columns if c not in keep_cols]
+    cast_df.drop(columns=drop_cols, inplace=True)
 
     down_df, up_df = cast_df.split()
 
@@ -170,6 +173,8 @@ def rbr_cast(excel_file, recasts: dict[str, int] | None = None):
         # Subtract atmospheric pressure so index represents gauge pressure (dbar)
         df['Pressure'] = df['Pressure'] - atm_pressure
         df.index = df.Pressure
+        # Keep only core columns; drop Pressure (now the index) and depSM (redundant)
+        df = df[['Time', 'tv290C', 'sal00']]
 
         station = recast_map[i] if recast_map is not None else f'cast_{i}'
         cast = CastFrame(df)
@@ -251,16 +256,12 @@ def castaway_cast(csv_file):
 
     df = pd.read_csv(csv_file, comment='%')
     col_map = {
-        'Pressure (Decibar)':                                   'Pressure',
-        'Depth (Meter)':                                        'depSM',
-        'Temperature (Celsius)':                                'tv290C',
-        'Salinity (Practical Salinity Scale)':                  'sal00',
-        'Conductivity (MicroSiemens per Centimeter)':           'conductivity',
-        'Specific conductance (MicroSiemens per Centimeter)':   'specific_conductance',
-        'Sound velocity (Meters per Second)':                   'sound_velocity',
-        'Density (Kilograms per Cubic Meter)':                  'density',
+        'Pressure (Decibar)':                  'Pressure',
+        'Temperature (Celsius)':               'tv290C',
+        'Salinity (Practical Salinity Scale)': 'sal00',
     }
     df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    df = df[['Pressure', 'tv290C', 'sal00']]
     df = df.set_index('Pressure')
 
     cast = CastFrame(df)
@@ -324,6 +325,19 @@ def _castaway_raw_station(base_station, cast_date, cast_time, ds):
     if best_repeat == 0:
         return base_station
     return base_station + chr(ord('a') + best_repeat - 1)
+
+
+def _print_no_depth(df: pd.DataFrame) -> None:
+    """Print a summary of rows where no CTD depth could be assigned."""
+    no_depth = df[df['ctd_source'] == 'no_depth']
+    if no_depth.empty:
+        return
+    print(f"\n{'='*55}")
+    print(f"  {len(no_depth)} DOC sample(s) still have no depth:")
+    print(f"{'='*55}")
+    for _, r in no_depth.iterrows():
+        print(f"  {r['date']}  {r['station']}  bottle {int(r['bottle_number'])}")
+    print(f"{'='*55}\n")
 
 
 def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
@@ -483,7 +497,10 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
         dates_ds    = ds_ctd.coords['date'].values       if 'date'       in ds_ctd.coords else []
         repeats_ds  = ds_ctd.coords['repeat'].values     if 'repeat'     in ds_ctd.coords else []
         depth_grid  = ds_ctd.coords['depth'].values      if 'depth'      in ds_ctd.coords else np.array([])
-        if 'rbr' in instruments:
+        # Support both new CF names (sal/temp) and legacy SBE names (sal00/tv290C)
+        sal_var  = 'sal'   if 'sal'   in ds_ctd else ('sal00'  if 'sal00'  in ds_ctd else None)
+        temp_var = 'temp'  if 'temp'  in ds_ctd else ('tv290C' if 'tv290C' in ds_ctd else None)
+        if 'rbr' in instruments and sal_var and temp_var:
             for station_val in stations_ds:
                 for date_val in dates_ds:
                     date_key = pd.Timestamp(date_val).date()
@@ -493,17 +510,23 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
                             repeat=repeat_val, instrument='rbr',
                         )
                         n = len(depth_grid)
-                        sal  = prof['sal00'].values  if 'sal00'  in ds_ctd else np.full(n, np.nan)
-                        temp = prof['tv290C'].values if 'tv290C' in ds_ctd else np.full(n, np.nan)
+                        sal  = prof[sal_var].values
+                        temp = prof[temp_var].values
                         valid = ~(np.isnan(sal) | np.isnan(temp))
                         if valid.sum() < 1:
                             continue
+                        cast_time = None
+                        if 'cast_time' in ds_ctd:
+                            t = prof['cast_time'].values
+                            if not pd.isnull(t):
+                                cast_time = pd.Timestamp(t)
                         rbr_lookup[(date_key, str(station_val))] = {
                             'depths':       depth_grid[valid],
                             'sal':          sal[valid],
                             'temp':         temp[valid],
                             'surface_sal':  float(sal[valid][0]),
                             'surface_temp': float(temp[valid][0]),
+                            'cast_time':    cast_time,
                         }
                         break  # first repeat with data is enough
         ds_ctd.close()
@@ -598,24 +621,19 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
                 castaway_result.at[idx, 'salinity']    = float(rbr['surface_sal'])
                 castaway_result.at[idx, 'temperature'] = float(rbr['surface_temp'])
                 castaway_result.at[idx, 'ctd_source']  = 'rbr'
+                if rbr['cast_time'] is not None:
+                    castaway_result.at[idx, 'local_time'] = rbr['cast_time']
             elif row['bottle_number'] == 5:
                 castaway_result.at[idx, 'depth']       = float(rbr['depths'][-1])
                 castaway_result.at[idx, 'salinity']    = float(rbr['sal'][-1])
                 castaway_result.at[idx, 'temperature'] = float(rbr['temp'][-1])
                 castaway_result.at[idx, 'ctd_source']  = 'rbr'
+                if rbr['cast_time'] is not None:
+                    castaway_result.at[idx, 'local_time'] = rbr['cast_time']
 
-    # Report remaining no_depth rows (intermediate bottles, or dates with no RBR)
-    no_depth = castaway_result[castaway_result['ctd_source'] == 'no_depth']
-    if not no_depth.empty:
-        print(f"\n{'='*55}")
-        print(f"  {len(no_depth)} DOC sample(s) still have no depth:")
-        print(f"{'='*55}")
-        for _, r in no_depth.iterrows():
-            print(f"  {r['date']}  {r['station']}  bottle {int(r['bottle_number'])}")
-        print(f"{'='*55}\n")
-
-    # If no BL/SBE data requested, return result now
+    # If no BL/SBE data requested, report and return now
     if bl_doc_path is None:
+        _print_no_depth(castaway_result)
         return castaway_result
 
     # Load pre-processed BL+DOC CSVs and normalise column names
@@ -655,42 +673,79 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
         subset=['date', 'station', 'bottle_number'], keep='last'
     ).sort_values(['date', 'station', 'bottle_number']).reset_index(drop=True)
 
+    _print_no_depth(combined)
     return combined
 
 
 def load_bottle_file(bl_file, doc_file=None):
     """
-    Load bottle (.bl) file and optionally merge with DOC data.
-    
+    Load bottle (.bl) file, extract CTD values from the paired CNV, and
+    optionally merge with DOC data.
+
+    ctd.from_bl() returns only timing information (bottle_number, time_local,
+    startscan, endscan). This function additionally opens the paired .cnv file
+    and matches each bottle's fire time to the closest CTD scan, extracting
+    tv290C (temperature), sal00 (salinity), and depSM (depth) for each bottle.
+
     Args:
-        bl_file: Path to .bl file
-        doc_file: Optional path to DOC excel file (sheet 'Processed' with 
-                  columns: station, date, bottle_number, doc_conc)
-    
-    Returns: DataFrame with bottle times and optionally DOC concentrations
+        bl_file:  Path to .bl file; a same-stem .cnv must exist alongside it.
+        doc_file: Optional path to DOC Excel file (sheet 'Processed' with
+                  columns: station, date, bottle_number, doc_conc).
+
+    Returns: DataFrame with columns:
+        bottle_number, time_local, startscan, endscan,
+        tv290C, sal00, depSM  (from CNV; NaN if CNV unavailable),
+        station, doc_conc     (if doc_file provided)
     """
     bl_df = ctd.from_bl(bl_file)
+    # from_bl uses bottle_number as the index; promote it to a regular column
+    bl_df = bl_df.reset_index()
     bl_df['bottle_number'] = bl_df['bottle_number'].astype(int)
-    
+
+    # Match each bottle fire time to the nearest CTD scan in the paired CNV.
+    # CNV files may be named {stem}.cnv or {stem}NTS.cnv (SeaBird convention).
+    bl_path = Path(bl_file)
+    cnv_file = bl_path.with_suffix('.cnv')
+    if not cnv_file.exists():
+        cnv_nts = bl_path.with_name(bl_path.stem + 'NTS.cnv')
+        if cnv_nts.exists():
+            cnv_file = cnv_nts
+    if cnv_file.exists():
+        try:
+            cnv_df = ctd.from_cnv(str(cnv_file))
+            cast_start = cnv_df._metadata.get('time')
+            if cast_start is not None and 'timeS' in cnv_df.columns:
+                scan_times = (
+                    pd.Timestamp(cast_start)
+                    + pd.to_timedelta(cnv_df['timeS'].values, unit='s')
+                )
+                for idx, row in bl_df.iterrows():
+                    nearest = int(np.argmin(np.abs(scan_times - pd.Timestamp(row['time_local']))))
+                    for col in ('tv290C', 'sal00', 'depSM'):
+                        if col in cnv_df.columns:
+                            bl_df.at[idx, col] = float(cnv_df.iloc[nearest][col])
+        except Exception as e:
+            print(f"Warning: Could not extract CTD values from {cnv_file.name}: {e}")
+
     if doc_file is None:
         bl_df['doc_conc'] = np.nan
         return bl_df
-    
+
     # Load and filter DOC data
     doc_df = pd.read_excel(doc_file, sheet_name='Processed')
     station_name = station_from_path(bl_file) or Path(bl_file).stem
-    bl_date = bl_df.iloc[0]['time_local'].date()
-    
+    bl_date = pd.to_datetime(bl_df.iloc[0]['time_local']).date()
+
     station_doc = doc_df[doc_df['station'] == station_name].copy()
     if 'date' in station_doc.columns:
         station_doc['date'] = pd.to_datetime(station_doc['date']).dt.date
         station_doc = station_doc[station_doc['date'] == bl_date]
-    
+
     if not station_doc.empty:
-        bl_df = pd.merge(bl_df, station_doc[['bottle_number', 'doc_conc']], 
+        bl_df = pd.merge(bl_df, station_doc[['bottle_number', 'doc_conc']],
                          on='bottle_number', how='left')
     else:
         bl_df['doc_conc'] = np.nan
-    
+
     return bl_df
 
