@@ -94,6 +94,8 @@ def _parse_station_repeat(raw_station: str) -> tuple[str, int]:
     Repeat casts append a lowercase letter ('S1b', 'S1c', 'G1b') → repeat 1, 2, ...
     """
     m = re.fullmatch(r'([A-Z0-9]+)([a-z]?)', raw_station)
+    if m is None:
+        return raw_station, 0
     base   = m.group(1)
     suffix = m.group(2)
     repeat = 0 if not suffix else ord(suffix) - ord('a') + 1
@@ -286,7 +288,7 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None,
     # 3.  Build 5D arrays (station, date, repeat, instrument, depth)      #
     # ------------------------------------------------------------------ #
     bin_delta  = 0.25
-    all_depths = np.concatenate([df.index.values for df in data_dict.values()])
+    all_depths = np.concatenate([df.index.to_numpy(dtype=float) for df in data_dict.values()])
     depth_grid = np.arange(
         np.floor(all_depths.min() * 4) / 4,
         np.ceil(all_depths.max()  * 4) / 4 + bin_delta,
@@ -321,16 +323,16 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None,
         di   = d_idx[date]
         ri   = r_idx[repeat]
         ii   = inst_idx[instrument]
-        cast_depths = proc_df.index.values
+        cast_depths = proc_df.index.to_numpy(dtype=float)
         in_range    = (depth_grid >= cast_depths.min()) & (depth_grid <= cast_depths.max())
         for var in var_names:
             if var in proc_df.columns:
                 arrays[var][si, di, ri, ii, in_range] = np.interp(
-                    depth_grid[in_range], cast_depths, proc_df[var].values
+                    depth_grid[in_range], cast_depths, proc_df[var].to_numpy(dtype=float)
                 )
         t = cast_times.get((base, date, repeat, instrument))
         if t is not None:
-            time_array[si, di, ri, ii] = np.datetime64(pd.Timestamp(t), 'ns')
+            time_array[si, di, ri, ii] = pd.Timestamp(t).to_datetime64()
 
     # Station lat/lon coords from STATIONS_DF
     station_coords: dict = {}
@@ -364,8 +366,8 @@ def create_ctd_dataset(surface_cutoffs_file=None, castaway_path=None,
 
     # Variable-level metadata
     for var in ds.data_vars:
-        if var in VAR_ATTRS:
-            ds[var].attrs.update(VAR_ATTRS[var])
+        if str(var) in VAR_ATTRS:
+            ds[str(var)].attrs.update(VAR_ATTRS[str(var)])
 
     # Dataset-level metadata
     ds.attrs.update(PROCESSING_ATTRS)
