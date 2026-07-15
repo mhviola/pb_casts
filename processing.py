@@ -159,7 +159,7 @@ def process_ctd(df, smooth=True, columns=None, surface_cutoff_m=None):
 
     # Stash any datetime column so it can be re-interpolated after binning
     # (datetime columns cannot go through the numeric QC chain).
-    date_cols = [col for col in df.columns if np.issubdtype(df[col].dtype, np.datetime64)]
+    date_cols = [col for col in df.columns if np.issubdtype(df[col].dtype, np.datetime64)]  # type: ignore[arg-type]
     num_date_cols = len(date_cols)
     if num_date_cols == 0:
         datetime_df = None
@@ -230,7 +230,7 @@ def process_ctd(df, smooth=True, columns=None, surface_cutoff_m=None):
 
     proc_df = (
         df_clean[cols_to_process]
-        .despike(n1=COMMON_PARAMS['despike_n1'], n2=COMMON_PARAMS['despike_n2'], block=despike_block)
+        .despike(n1=COMMON_PARAMS['despike_n1'], n2=COMMON_PARAMS['despike_n2'], block=despike_block)  # type: ignore[attr-defined]
         .lp_filter(sample_rate=sample_rate, time_constant=COMMON_PARAMS['lp_filter_time_constant_s'])
         .press_check()
         .interpolate(method="index", limit_direction="both", limit_area="inside")
@@ -257,15 +257,15 @@ def process_ctd(df, smooth=True, columns=None, surface_cutoff_m=None):
             proc_df[col] = np.round(proc_df[col], precision)
 
     if 'timeS' in df.columns:
-        proc_df['timeS'] = np.interp(new_index, df.index.values, df['timeS'].values)
+        proc_df['timeS'] = np.interp(new_index, df.index.values, df['timeS'].values)  # type: ignore[arg-type]
         time_resolution = 1.0 / sample_rate  # 0.25s for 4Hz, 0.125s for 8Hz
         proc_df['timeS'] = np.round(proc_df['timeS'] / time_resolution) * time_resolution
-        proc_df['time_local'] = meta.get('time') + pd.to_timedelta(proc_df['timeS'], unit='s')
+        proc_df['time_local'] = meta.get('time') + pd.to_timedelta(proc_df['timeS'], unit='s')  # type: ignore[arg-type]
     elif datetime_df is not None:
         time_resolution = 1.0 / sample_rate
         # Convert datetime to numeric (timestamps), interpolate, then convert back
         datetime_numeric = datetime_df.astype(np.int64) / 1e9  # Convert to seconds since epoch
-        interpolated_numeric = np.interp(new_index, df.index.values, datetime_numeric)
+        interpolated_numeric = np.interp(new_index, df.index.values, datetime_numeric)  # type: ignore[arg-type]
         rounded_numeric = np.round(interpolated_numeric / time_resolution) * time_resolution
         proc_df['time_local'] = pd.to_datetime(rounded_numeric, unit='s')
 

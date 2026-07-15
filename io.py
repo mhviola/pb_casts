@@ -5,7 +5,7 @@ import re
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import ctd
+import ctd  # type: ignore[import-untyped]
 from .utils import CastFrame
 from . import config
 
@@ -24,7 +24,7 @@ def get_cast(file):
     """
     if file.endswith('.cnv'):
         cast = sbe_cast(file)
-        cast['time'] = cast.cast_meta['time'] + pd.to_timedelta(cast['timeS'], unit='s')
+        cast['time'] = cast.cast_meta['time'] + pd.to_timedelta(cast['timeS'], unit='s')  # type: ignore[arg-type]
         return [cast]
     elif file.endswith('.xlsx'):
         return rbr_cast(file)
@@ -179,7 +179,7 @@ def rbr_cast(excel_file, recasts: dict[str, int] | None = None):
         station = recast_map[i] if recast_map is not None else f'cast_{i}'
         cast = CastFrame(df)
         cast.cast_meta = {'atmospheric_pressure': atm_pressure, 'instrument_type': 'rbr',
-                          'time': df.Time.iloc[0], 'station': station}
+                          'time': df.Time.iloc[0], 'station': station}  # type: ignore[union-attr]
         dfs.append(cast)
 
     return dfs
@@ -336,7 +336,7 @@ def _print_no_depth(df: pd.DataFrame) -> None:
     print(f"  {len(no_depth)} DOC sample(s) still have no depth:")
     print(f"{'='*55}")
     for _, r in no_depth.iterrows():
-        print(f"  {r['date']}  {r['station']}  bottle {int(r['bottle_number'])}")
+        print(f"  {r['date']}  {r['station']}  bottle {int(r['bottle_number'])}")  # type: ignore[arg-type]
     print(f"{'='*55}\n")
 
 
@@ -431,7 +431,10 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
         if not lat_str or not lon_str:
             continue
 
-        local_time = pd.to_datetime(header.get('Cast time (local)'))
+        local_time_str = header.get('Cast time (local)')
+        if not local_time_str:
+            continue
+        local_time = pd.to_datetime(local_time_str)
         lat, lon = float(lat_str), float(lon_str)
         base_station = _nearest_station(lat, lon)
         cast_date    = local_time.date()
@@ -475,7 +478,7 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
     doc_df['date'] = pd.to_datetime(doc_df['date']).dt.date
     doc_df = doc_df.groupby(
         ['date', 'station', 'bottle_number'], as_index=False
-    )['doc_conc'].mean()
+    ).agg({'doc_conc': 'mean'})
 
     # Primary cast = deepest on that (station, date); secondary = shallower duplicate(s)
     cast_summary = cast_summary.sort_values('max_depth', ascending=False)
@@ -519,7 +522,7 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
                         if 'cast_time' in ds_ctd:
                             t = prof['cast_time'].values
                             if not pd.isnull(t):
-                                cast_time = pd.Timestamp(t)
+                                cast_time = pd.Timestamp(t)  # type: ignore[arg-type]
                         rbr_lookup[(date_key, str(station_val))] = {
                             'depths':       depth_grid[valid],
                             'sal':          sal[valid],
@@ -533,13 +536,13 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
 
     # Build CTD lookup keyed by (date, station, bottle_number)
     bottle1 = primary[['date', 'station', 'surface_sal', 'surface_depth',
-                        'surface_temp', 'local_time']].rename(
+                        'surface_temp', 'local_time']].rename(  # type: ignore[call-overload]
         columns={'surface_sal': 'salinity', 'surface_depth': 'depth',
                  'surface_temp': 'temperature'}
     ).assign(bottle_number=1, ctd_source='castaway')
 
     bottle5 = primary[['date', 'station', 'bottom_sal', 'bottom_depth',
-                        'bottom_temp', 'local_time']].rename(
+                        'bottom_temp', 'local_time']].rename(  # type: ignore[call-overload]
         columns={'bottom_sal': 'salinity', 'bottom_depth': 'depth',
                  'bottom_temp': 'temperature'}
     ).assign(bottle_number=5, ctd_source='castaway')
@@ -581,7 +584,7 @@ def build_castaway_doc(castaway_folder, doc_file, invalid_folder=None,
             mask = (
                 (doc_df['date'] == sec['date']) &
                 (doc_df['station'] == sec['station']) &
-                (~doc_df['bottle_number'].isin([1, 5]))
+                (~doc_df['bottle_number'].isin([1, 5]))  # type: ignore[union-attr]
             )
             for bn in doc_df.loc[mask, 'bottle_number'].values:
                 extra_rows.append({
@@ -748,11 +751,11 @@ def load_bottle_file(bl_file, doc_file=None):
 
     station_doc = doc_df[doc_df['station'] == station_name].copy()
     if 'date' in station_doc.columns:
-        station_doc['date'] = pd.to_datetime(station_doc['date']).dt.date
+        station_doc['date'] = pd.to_datetime(station_doc['date']).dt.date  # type: ignore[union-attr]
         station_doc = station_doc[station_doc['date'] == bl_date]
 
-    if not station_doc.empty:
-        bl_df = pd.merge(bl_df, station_doc[['bottle_number', 'doc_conc']],
+    if not station_doc.empty:  # type: ignore[union-attr]
+        bl_df = pd.merge(bl_df, station_doc[['bottle_number', 'doc_conc']],  # type: ignore[arg-type]
                          on='bottle_number', how='left')
     else:
         bl_df['doc_conc'] = np.nan
