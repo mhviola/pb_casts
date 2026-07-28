@@ -270,6 +270,7 @@ the top of `processing.py`.
 | `compute_density(df, ...)` | Add `rho0` and `sigma0` columns via TEOS-10 |
 | `detect_precision(series)` | Infer decimal precision of a Series |
 | `parse_folder_date(folder_name)` | Parse `2025Aug20` → pandas Timestamp |
+| `godin_filter(data, dt_hours)` | Apply Godin (24h–24h–25h) low-pass filter to a time series |
 | `CastFrame` | DataFrame subclass that preserves `cast_meta` through pandas ops |
 
 ### Configuration

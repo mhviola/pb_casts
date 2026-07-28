@@ -2,6 +2,7 @@
 Utility functions for Padilla Bay CTD processing.
 """
 import re
+import numpy as np
 import pandas as pd
 import gsw
 from . import config
@@ -168,3 +169,23 @@ def parse_folder_date(folder_name):
             return pd.to_datetime(f"{year}-{month_map[month_str]}-{day}")
     return None
 
+
+def godin_filter(data, dt_hours=1):
+    """
+    Apply Godin filter: three moving averages (24h, 24h, 25h).
+    Uses centered rolling means so edge values are NaN rather than
+    artificially low from zero-padding.
+
+    Parameters:
+    - data: array-like or pandas Series of data to filter
+    - dt_hours: time step in hours (default: 1 hour)
+    """
+    N24 = int(24 / dt_hours)
+    N25 = int(25 / dt_hours)
+
+    s = pd.Series(data.values if hasattr(data, 'values') else np.asarray(data))
+    filtered = s.rolling(N24, center=True, min_periods=N24).mean()
+    filtered = filtered.rolling(N24, center=True, min_periods=N24).mean()
+    filtered = filtered.rolling(N25, center=True, min_periods=N25).mean()
+
+    return filtered.values

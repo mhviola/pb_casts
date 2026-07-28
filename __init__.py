@@ -47,7 +47,7 @@ from .plotting import plot_ts, from_file_to_plot, plot_bl_files
 from .storage import make_parquet
 from .batch import process_bl_doc_files, batch_process_all, review_surface_cutoffs, load_surface_cutoffs, plot_cutoff_check, plot_multi_instrument_pdf, fill_manual_depths
 from .dataset import create_ctd_dataset
-from .utils import detect_precision, parse_folder_date, compute_density, CastFrame
+from .utils import detect_precision, parse_folder_date, compute_density, CastFrame, godin_filter
 from .config import set_project_root, PROJECT_ROOT, DATA_PATH, OUTPUT_PATH, DOC_FILE, CASTAWAY_PATH
 
 __all__ = [
@@ -88,6 +88,7 @@ __all__ = [
     'parse_folder_date',
     'compute_density',
     'CastFrame',
+    'godin_filter',
     
     # Configuration
     'set_project_root',
